@@ -261,7 +261,7 @@ export default function App() {
       <div className="messages">
         {messages[activeAgent].map((msg, i) => (
           <div key={i} className={`message ${msg.role}`}>
-            {msg.role === 'user' ? (
+            {msg.role === 'user' && (msg.imageUrls?.length > 0 || msg.fileNames?.length > 0) ? (
               <div className="user-block">
                 {msg.imageUrls?.length > 0 && (
                   <div className="attach-images">
