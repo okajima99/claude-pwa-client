@@ -66,7 +66,7 @@ export default function App() {
     // 応答の受け皿となる空メッセージを追加
     setMessages(prev => ({
       ...prev,
-      [agent]: [...prev[agent], { role: 'agent', text: '', thinking: '', thinkingOpen: true, streaming: true }]
+      [agent]: [...prev[agent], { role: 'agent', text: '', thinking: '', thinkingOpen: false, tools: [], streaming: true }]
     }))
 
     const controller = new AbortController()
@@ -113,12 +113,22 @@ export default function App() {
                 .filter(b => b.type === 'text')
                 .map(b => b.text)
                 .join('')
+              const newTools = event.message.content
+                .filter(b => b.type === 'tool_use')
+                .map(b => formatTool(b))
 
               setMessages(prev => {
                 const msgs = [...prev[agent]]
                 const last = { ...msgs[msgs.length - 1] }
                 if (thinkingText) last.thinking = thinkingText
                 if (textContent) last.text = textContent
+                if (newTools.length > 0) {
+                  const existing = last.tools || []
+                  // 同じidのツールは重複追加しない
+                  const existingIds = new Set(existing.map(t => t.id))
+                  const toAdd = newTools.filter(t => !existingIds.has(t.id))
+                  if (toAdd.length > 0) last.tools = [...existing, ...toAdd]
+                }
                 msgs[msgs.length - 1] = last
                 return { ...prev, [agent]: msgs }
               })
@@ -229,19 +239,31 @@ export default function App() {
       <div className="messages">
         {messages[activeAgent].map((msg, i) => (
           <div key={i} className={`message ${msg.role}`}>
-            {msg.role === 'agent' && msg.thinking ? (
+            {msg.role === 'agent' && (msg.thinking || msg.tools?.length > 0) ? (
               <div className="agent-block">
-                <div className="thinking-block">
-                  <button
-                    className="thinking-toggle"
-                    onClick={() => toggleThinking(activeAgent, i)}
-                  >
-                    {msg.thinkingOpen ? '▼' : '▶'} thinking{msg.streaming ? ' …' : ''}
-                  </button>
-                  {msg.thinkingOpen && (
-                    <div className="thinking-content">{msg.thinking}</div>
-                  )}
-                </div>
+                {msg.thinking && (
+                  <div className="thinking-block">
+                    <button
+                      className="thinking-toggle"
+                      onClick={() => toggleThinking(activeAgent, i)}
+                    >
+                      {msg.thinkingOpen ? '▼' : '▶'} thinking{msg.streaming ? ' …' : ''}
+                    </button>
+                    {msg.thinkingOpen && (
+                      <div className="thinking-content">{msg.thinking}</div>
+                    )}
+                  </div>
+                )}
+                {msg.tools?.length > 0 && (
+                  <div className="tool-log">
+                    {msg.tools.map((t, ti) => (
+                      <div key={ti} className={`tool-line tool-${t.name.toLowerCase()}`}>
+                        {t.label}
+                      </div>
+                    ))}
+                    {msg.streaming && <div className="tool-line tool-pending">…</div>}
+                  </div>
+                )}
                 {msg.text && (
                   <span className="bubble">
                     <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} />
@@ -310,6 +332,34 @@ export default function App() {
       )}
     </div>
   )
+}
+
+function formatTool(block) {
+  const { id, name, input } = block
+  let label = ''
+  switch (name) {
+    case 'Bash':
+      label = `$ ${input?.command ?? ''}`
+      break
+    case 'Read':
+      label = `read  ${input?.file_path ?? ''}`
+      break
+    case 'Write':
+      label = `write ${input?.file_path ?? ''}`
+      break
+    case 'Edit':
+      label = `edit  ${input?.file_path ?? ''}`
+      break
+    case 'Glob':
+      label = `glob  ${input?.pattern ?? ''}`
+      break
+    case 'Grep':
+      label = `grep  ${input?.pattern ?? ''}`
+      break
+    default:
+      label = `[${name}] ${JSON.stringify(input ?? {})}`
+  }
+  return { id, name, label }
 }
 
 function pctClass(pct) {

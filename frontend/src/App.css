@@ -205,6 +205,27 @@ button:disabled {
   color: #ff5f57;
 }
 
+/* ツール実行ログ */
+.tool-log {
+  font-family: 'Menlo', 'Monaco', monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.6;
+  padding: 0 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.tool-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+  opacity: 0.8;
+}
+
+.tool-bash { color: var(--green); }
+.tool-pending { opacity: 0.4; }
+
 /* 停止ボタン */
 .stop {
   background: #3a1a1a;
