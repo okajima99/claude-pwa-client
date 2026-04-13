@@ -244,24 +244,57 @@ button:disabled {
   color: #ff5f57;
 }
 
-.menu-confirm-label {
-  padding: 10px 16px 6px;
-  font-size: 13px;
-  color: var(--text-dim);
-}
-
-.menu-confirm-btns {
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 200;
   display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.menu-confirm-btns .menu-item {
-  flex: 1;
+.confirm-dialog {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px 24px 16px;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.confirm-text {
+  margin: 0;
+  font-size: 15px;
   text-align: center;
+  color: var(--text);
 }
 
-.confirm-no {
-  color: var(--text-dim);
-  border-top: 1px solid var(--border);
+.confirm-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.confirm-btn {
+  flex: 1;
+  padding: 10px;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.confirm-btn.no {
+  background: var(--bg3);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.confirm-btn.yes {
+  background: #3a1a1a;
+  color: #ff5f57;
+  border: 1px solid #ff5f57;
 }
 
 /* ツール実行ログ */

@@ -587,27 +587,15 @@ export default function App() {
         <div className="buttons" ref={menuRef}>
           {menuOpen && (
             <div className="action-menu">
-              {confirmEnd ? (
-                <>
-                  <div className="menu-confirm-label">本当に終了しますか？</div>
-                  <div className="menu-confirm-btns">
-                    <button onClick={endSession} className="menu-item end confirm-yes">はい</button>
-                    <button onClick={() => setConfirmEnd(false)} className="menu-item confirm-no">いいえ</button>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <button onClick={() => { fileInputRef.current?.click(); setMenuOpen(false) }} className="menu-item">
-                    ファイル添付
-                  </button>
-                  <button onClick={() => { setTreeOpen(true); setMenuOpen(false) }} className="menu-item">
-                    ファイルツリー
-                  </button>
-                  <button onClick={() => setConfirmEnd(true)} className="menu-item end">
-                    セッション終了
-                  </button>
-                </>
-              )}
+              <button onClick={() => { fileInputRef.current?.click(); setMenuOpen(false) }} className="menu-item">
+                ファイル添付
+              </button>
+              <button onClick={() => { setTreeOpen(true); setMenuOpen(false) }} className="menu-item">
+                ファイルツリー
+              </button>
+              <button onClick={() => { setMenuOpen(false); setConfirmEnd(true) }} className="menu-item end">
+                セッション終了
+              </button>
             </div>
           )}
           <button
@@ -629,6 +617,18 @@ export default function App() {
           )}
         </div>
       </div>
+
+      {confirmEnd && (
+        <div className="confirm-overlay" onClick={() => setConfirmEnd(false)}>
+          <div className="confirm-dialog" onClick={e => e.stopPropagation()}>
+            <p className="confirm-text">セッションを終了しますか？</p>
+            <div className="confirm-actions">
+              <button onClick={() => setConfirmEnd(false)} className="confirm-btn no">いいえ</button>
+              <button onClick={endSession} className="confirm-btn yes">はい</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {previewPath && (
         <FilePreviewModal path={previewPath} onClose={() => setPreviewPath(null)} />
