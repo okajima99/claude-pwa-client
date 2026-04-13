@@ -25,6 +25,7 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [previewPath, setPreviewPath] = useState(null)
   const [treeOpen, setTreeOpen] = useState(false)
+  const [confirmEnd, setConfirmEnd] = useState(false)
   // スクロール制御
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const [hasNew, setHasNew] = useState(false)
@@ -417,6 +418,7 @@ export default function App() {
 
   const endSession = async () => {
     setMenuOpen(false)
+    setConfirmEnd(false)
     await fetch(`${API_BASE}/session/${activeAgent}/end`, { method: 'POST' })
     setMessages(prev => ({
       ...prev,
@@ -430,6 +432,7 @@ export default function App() {
         setMenuOpen(false)
       }
     }
+    if (!menuOpen) setConfirmEnd(false)
     if (menuOpen) document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [menuOpen])
@@ -584,15 +587,27 @@ export default function App() {
         <div className="buttons" ref={menuRef}>
           {menuOpen && (
             <div className="action-menu">
-              <button onClick={() => { fileInputRef.current?.click(); setMenuOpen(false) }} className="menu-item">
-                ファイル添付
-              </button>
-              <button onClick={() => { setTreeOpen(true); setMenuOpen(false) }} className="menu-item">
-                ファイルツリー
-              </button>
-              <button onClick={endSession} className="menu-item end">
-                セッション終了
-              </button>
+              {confirmEnd ? (
+                <>
+                  <div className="menu-confirm-label">本当に終了しますか？</div>
+                  <div className="menu-confirm-btns">
+                    <button onClick={endSession} className="menu-item end confirm-yes">はい</button>
+                    <button onClick={() => setConfirmEnd(false)} className="menu-item confirm-no">いいえ</button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <button onClick={() => { fileInputRef.current?.click(); setMenuOpen(false) }} className="menu-item">
+                    ファイル添付
+                  </button>
+                  <button onClick={() => { setTreeOpen(true); setMenuOpen(false) }} className="menu-item">
+                    ファイルツリー
+                  </button>
+                  <button onClick={() => setConfirmEnd(true)} className="menu-item end">
+                    セッション終了
+                  </button>
+                </>
+              )}
             </div>
           )}
           <button

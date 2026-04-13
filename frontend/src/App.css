@@ -244,6 +244,26 @@ button:disabled {
   color: #ff5f57;
 }
 
+.menu-confirm-label {
+  padding: 10px 16px 6px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.menu-confirm-btns {
+  display: flex;
+}
+
+.menu-confirm-btns .menu-item {
+  flex: 1;
+  text-align: center;
+}
+
+.confirm-no {
+  color: var(--text-dim);
+  border-top: 1px solid var(--border);
+}
+
 /* ツール実行ログ */
 .tool-log {
   font-family: 'Menlo', 'Monaco', monospace;
