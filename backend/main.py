@@ -1,9 +1,10 @@
+import asyncio
 import json
-import subprocess
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 HOME = Path.home()
@@ -27,18 +28,15 @@ app.add_middleware(
 )
 
 # --- セッション管理（メモリ上） ---
-# キー: config.jsonで定義されたagent名, 値: session_id または None
 sessions: dict[str, str | None] = {name: None for name in AGENTS}
+
+# --- 実行中プロセス管理（停止ボタン用） ---
+running_procs: dict[str, asyncio.subprocess.Process | None] = {}
 
 
 # --- リクエスト/レスポンス型定義 ---
 class ChatRequest(BaseModel):
     message: str
-
-
-class ChatResponse(BaseModel):
-    result: str
-    session_id: str
 
 
 class StatusResponse(BaseModel):
@@ -52,9 +50,9 @@ class StatusResponse(BaseModel):
 
 # --- エンドポイント ---
 
-@app.post("/chat/{agent}", response_model=ChatResponse)
-def chat(agent: str, req: ChatRequest):
-    """メッセージを送信してエージェントの返答を返す"""
+@app.post("/chat/{agent}/stream")
+async def chat_stream(agent: str, req: ChatRequest):
+    """メッセージを送信してエージェントの出力をSSEでストリーミングする"""
     if agent not in AGENTS:
         raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
 
@@ -64,22 +62,62 @@ def chat(agent: str, req: ChatRequest):
     cmd = [config.get("claude_path", "claude")]
     if session_id:
         cmd += ["--resume", session_id]
-    cmd += ["-p", req.message, "--output-format", "json"]
+    cmd += ["-p", req.message, "--output-format", "stream-json", "--verbose"]
 
-    result = subprocess.run(
-        cmd,
-        cwd=cwd,
-        capture_output=True,
-        text=True,
+    async def generate():
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        running_procs[agent] = proc
+
+        try:
+            async for raw_line in proc.stdout:
+                line = raw_line.decode().strip()
+                if not line:
+                    continue
+                # session_idをresultイベントから保存
+                try:
+                    event = json.loads(line)
+                    if event.get("type") == "result" and event.get("session_id"):
+                        sessions[agent] = event["session_id"]
+                except json.JSONDecodeError:
+                    pass
+                yield f"data: {line}\n\n"
+        finally:
+            running_procs[agent] = None
+            try:
+                await proc.wait()
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
 
-    if result.returncode != 0:
-        raise HTTPException(status_code=500, detail=result.stderr)
 
-    data = json.loads(result.stdout)
-    sessions[agent] = data["session_id"]
+@app.post("/chat/{agent}/stop")
+async def chat_stop(agent: str):
+    """実行中のサブプロセスをkillする"""
+    if agent not in AGENTS:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
 
-    return ChatResponse(result=data["result"], session_id=data["session_id"])
+    proc = running_procs.get(agent)
+    if proc:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        running_procs[agent] = None
+
+    return {"status": "stopped"}
 
 
 @app.post("/session/{agent}/end")

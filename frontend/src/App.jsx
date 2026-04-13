@@ -25,6 +25,7 @@ export default function App() {
   const [treeOpen, setTreeOpen] = useState(false)
   const bottomRef = useRef(null)
   const menuRef = useRef(null)
+  const abortControllers = useRef({ agent_a: null, agent_b: null })
 
   // タブ切り替え・10秒ごとにステータス取得
   useEffect(() => {
@@ -54,6 +55,7 @@ export default function App() {
     const text = input[agent].trim()
     if (!text || loading[agent]) return
 
+    // ユーザーメッセージを追加
     setMessages(prev => ({
       ...prev,
       [agent]: [...prev[agent], { role: 'user', text }]
@@ -61,25 +63,110 @@ export default function App() {
     setInput(prev => ({ ...prev, [agent]: '' }))
     setLoading(prev => ({ ...prev, [agent]: true }))
 
+    // 応答の受け皿となる空メッセージを追加
+    setMessages(prev => ({
+      ...prev,
+      [agent]: [...prev[agent], { role: 'agent', text: '', thinking: '', thinkingOpen: true, streaming: true }]
+    }))
+
+    const controller = new AbortController()
+    abortControllers.current[agent] = controller
+
     try {
-      const res = await fetch(`${API_BASE}/chat/${agent}`, {
+      const res = await fetch(`${API_BASE}/chat/${agent}/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text }),
+        signal: controller.signal,
       })
-      const data = await res.json()
-      setMessages(prev => ({
-        ...prev,
-        [agent]: [...prev[agent], { role: 'agent', text: data.result }]
-      }))
-    } catch {
-      setMessages(prev => ({
-        ...prev,
-        [agent]: [...prev[agent], { role: 'error', text: '送信失敗' }]
-      }))
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`)
+      }
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() // 未完了の行を次回に持ち越す
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const data = line.slice(6).trim()
+          if (!data) continue
+
+          try {
+            const event = JSON.parse(data)
+
+            if (event.type === 'assistant' && event.message?.content) {
+              const thinkingText = event.message.content
+                .filter(b => b.type === 'thinking')
+                .map(b => b.thinking)
+                .join('')
+              const textContent = event.message.content
+                .filter(b => b.type === 'text')
+                .map(b => b.text)
+                .join('')
+
+              setMessages(prev => {
+                const msgs = [...prev[agent]]
+                const last = { ...msgs[msgs.length - 1] }
+                if (thinkingText) last.thinking = thinkingText
+                if (textContent) last.text = textContent
+                msgs[msgs.length - 1] = last
+                return { ...prev, [agent]: msgs }
+              })
+            }
+          } catch {}
+        }
+      }
+    } catch (e) {
+      if (e.name !== 'AbortError') {
+        setMessages(prev => ({
+          ...prev,
+          [agent]: [...prev[agent], { role: 'error', text: '送信失敗' }]
+        }))
+      }
     } finally {
       setLoading(prev => ({ ...prev, [agent]: false }))
+      setMessages(prev => {
+        const msgs = [...prev[agent]]
+        if (msgs.length > 0 && msgs[msgs.length - 1].streaming) {
+          const last = { ...msgs[msgs.length - 1], streaming: false }
+          msgs[msgs.length - 1] = last
+        }
+        return { ...prev, [agent]: msgs }
+      })
+      abortControllers.current[agent] = null
     }
+  }
+
+  const stopMessage = async () => {
+    const agent = activeAgent
+    // fetchをAbort
+    if (abortControllers.current[agent]) {
+      abortControllers.current[agent].abort()
+      abortControllers.current[agent] = null
+    }
+    // サブプロセスをkill
+    try {
+      await fetch(`${API_BASE}/chat/${agent}/stop`, { method: 'POST' })
+    } catch {}
+    setLoading(prev => ({ ...prev, [agent]: false }))
+  }
+
+  const toggleThinking = (agent, index) => {
+    setMessages(prev => {
+      const msgs = [...prev[agent]]
+      msgs[index] = { ...msgs[index], thinkingOpen: !msgs[index].thinkingOpen }
+      return { ...prev, [agent]: msgs }
+    })
   }
 
   const endSession = async () => {
@@ -142,14 +229,35 @@ export default function App() {
       <div className="messages">
         {messages[activeAgent].map((msg, i) => (
           <div key={i} className={`message ${msg.role}`}>
-            <span className="bubble">
-              <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} />
-            </span>
+            {msg.role === 'agent' && msg.thinking ? (
+              <div className="agent-block">
+                <div className="thinking-block">
+                  <button
+                    className="thinking-toggle"
+                    onClick={() => toggleThinking(activeAgent, i)}
+                  >
+                    {msg.thinkingOpen ? '▼' : '▶'} thinking{msg.streaming ? ' …' : ''}
+                  </button>
+                  {msg.thinkingOpen && (
+                    <div className="thinking-content">{msg.thinking}</div>
+                  )}
+                </div>
+                {msg.text && (
+                  <span className="bubble">
+                    <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} />
+                  </span>
+                )}
+              </div>
+            ) : (
+              <span className="bubble">
+                <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} />
+              </span>
+            )}
           </div>
         ))}
-        {loading[activeAgent] && (
+        {loading[activeAgent] && !messages[activeAgent].some(m => m.streaming) && (
           <div className="message agent">
-            <span className="bubble dim">...</span>
+            <span className="bubble dim">…</span>
           </div>
         )}
         <div ref={bottomRef} />
@@ -182,9 +290,13 @@ export default function App() {
           >
             ⋯
           </button>
-          <button onClick={sendMessage} disabled={loading[activeAgent] || !input[activeAgent].trim()} className="send">
-            送信
-          </button>
+          {loading[activeAgent] ? (
+            <button onClick={stopMessage} className="stop">■</button>
+          ) : (
+            <button onClick={sendMessage} disabled={!input[activeAgent].trim()} className="send">
+              送信
+            </button>
+          )}
         </div>
       </div>
       {previewPath && (
