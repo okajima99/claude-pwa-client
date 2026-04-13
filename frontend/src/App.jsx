@@ -74,12 +74,19 @@ export default function App() {
   }, [messages, activeAgent])
 
   // 処理中ストリームへの再接続チェック（重複防止つき）
-  const checkAndReconnect = async () => {
+  // forceReconnect=true の時はloading中でも強制的に既存接続を切って再接続（バックグラウンド復帰時）
+  const checkAndReconnect = async (forceReconnect = false) => {
     for (const agent of AGENTS) {
-      if (loading[agent] || reconnectingRef.current[agent]) continue
+      if (reconnectingRef.current[agent]) continue
+      if (!forceReconnect && loading[agent]) continue
       try {
         const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json())
         if (s.streaming) {
+          // 既存の接続を切断してから再接続
+          if (abortControllers.current[agent]) {
+            abortControllers.current[agent].abort()
+            abortControllers.current[agent] = null
+          }
           reconnectingRef.current[agent] = true
           reconnectStream(agent).finally(() => {
             reconnectingRef.current[agent] = false
@@ -93,8 +100,9 @@ export default function App() {
   useEffect(() => { checkAndReconnect() }, [])
 
   // アプリ復帰時チェック（ホーム画面→戻り）
+  // forceReconnect=true: loading中でも強制再接続（バックグラウンドで接続が死んでいる可能性があるため）
   useEffect(() => {
-    const handle = () => { if (!document.hidden) checkAndReconnect() }
+    const handle = () => { if (!document.hidden) checkAndReconnect(true) }
     document.addEventListener('visibilitychange', handle)
     return () => document.removeEventListener('visibilitychange', handle)
   }, [loading])
