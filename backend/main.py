@@ -2,7 +2,9 @@ import asyncio
 import base64
 import json
 import mimetypes
+import os
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List
 
@@ -21,7 +23,6 @@ with open(CONFIG_PATH) as f:
 
 AGENTS = config["agents"]
 ANTHROPIC_API_BASE = "https://api.anthropic.com"
-PROXY_PORT = 8000  # 自分自身のポート（プロキシパスに使う）
 
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
@@ -55,6 +56,15 @@ def _save_sessions() -> None:
 
 sessions: dict[str, str | None] = _load_sessions()
 
+# --- ストリーム状態（エージェントごと）---
+@dataclass
+class StreamState:
+    buffer: list[str] = field(default_factory=list)
+    task: asyncio.Task | None = None
+    complete: bool = True  # 初期状態は「完了済み（次のメッセージを受け付ける）」
+
+stream_states: dict[str, StreamState] = {name: StreamState() for name in AGENTS}
+
 # --- 実行中プロセス管理 ---
 running_procs: dict[str, asyncio.subprocess.Process | None] = {}
 
@@ -62,23 +72,20 @@ running_procs: dict[str, asyncio.subprocess.Process | None] = {}
 session_tmp_files: dict[str, list[Path]] = {}
 
 # --- ステータスキャッシュ ---
-# 共通（アカウント単位）
 shared_status: dict = {
     "five_hour_pct": 0,
     "seven_day_pct": 0,
     "five_hour_resets_at": 0,
     "seven_day_resets_at": 0,
 }
-# エージェントごと
 agent_status: dict[str, dict] = {
     name: {"ctx_pct": 0, "model": cfg.get("model", "")}
     for name, cfg in AGENTS.items()
 }
 
 
-def _update_shared_from_headers(headers: httpx.Headers | dict) -> None:
-    """プロキシのレスポンスヘッダーから共通ステータスを更新"""
-    def _get(key: str) -> str | None:
+def _update_shared_from_headers(headers) -> None:
+    def _get(key):
         if isinstance(headers, httpx.Headers):
             return headers.get(key)
         return headers.get(key)
@@ -100,14 +107,14 @@ def _update_shared_from_headers(headers: httpx.Headers | dict) -> None:
             pass
     if five_h_reset is not None:
         try:
-            from datetime import datetime, timezone
+            from datetime import datetime
             dt = datetime.fromisoformat(five_h_reset.replace("Z", "+00:00"))
             shared_status["five_hour_resets_at"] = int(dt.timestamp())
         except Exception:
             pass
     if seven_d_reset is not None:
         try:
-            from datetime import datetime, timezone
+            from datetime import datetime
             dt = datetime.fromisoformat(seven_d_reset.replace("Z", "+00:00"))
             shared_status["seven_day_resets_at"] = int(dt.timestamp())
         except Exception:
@@ -115,34 +122,28 @@ def _update_shared_from_headers(headers: httpx.Headers | dict) -> None:
 
 
 def _update_agent_from_result(agent: str, result_event: dict) -> None:
-    """resultイベントからctx%とmodel名を更新"""
     model_usage = result_event.get("modelUsage", {})
-    if model_usage:
-        # モデル名（最初のキー）
-        model_key = next(iter(model_usage), None)
-        if model_key:
-            # "claude-sonnet-4-6" → "Sonnet 4.6" のように整形
-            display = _format_model_name(model_key)
-            agent_status[agent]["model"] = display
-
-            # ctx%計算
-            usage = model_usage[model_key]
-            ctx_window = usage.get("contextWindow", 0)
-            if ctx_window > 0:
-                total_tokens = (
-                    usage.get("inputTokens", 0)
-                    + usage.get("outputTokens", 0)
-                    + usage.get("cacheReadInputTokens", 0)
-                    + usage.get("cacheCreationInputTokens", 0)
-                )
-                agent_status[agent]["ctx_pct"] = round(total_tokens / ctx_window * 100)
+    if not model_usage:
+        return
+    model_key = next(iter(model_usage), None)
+    if not model_key:
+        return
+    agent_status[agent]["model"] = _format_model_name(model_key)
+    usage = model_usage[model_key]
+    ctx_window = usage.get("contextWindow", 0)
+    if ctx_window > 0:
+        total_tokens = (
+            usage.get("inputTokens", 0)
+            + usage.get("outputTokens", 0)
+            + usage.get("cacheReadInputTokens", 0)
+            + usage.get("cacheCreationInputTokens", 0)
+        )
+        agent_status[agent]["ctx_pct"] = round(total_tokens / ctx_window * 100)
 
 
 def _format_model_name(key: str) -> str:
-    """claude-sonnet-4-6 → Sonnet 4.6"""
     key = key.replace("claude-", "")
     parts = key.split("-")
-    # 末尾2つが数字パターン（例: 4-6）ならバージョン
     if len(parts) >= 3:
         name = parts[0].capitalize()
         version = ".".join(parts[1:])
@@ -170,7 +171,6 @@ async def save_to_tmp(files: list[UploadFile], agent: str) -> list[dict]:
     return saved
 
 
-# --- コンテンツブロック組み立て ---
 def build_content(message: str, saved_files: list[dict]) -> list:
     content = []
     for sf in saved_files:
@@ -197,48 +197,13 @@ def build_content(message: str, saved_files: list[dict]) -> list:
     return content
 
 
-# --- エンドポイント ---
-
-@app.post("/chat/{agent}/stream")
-async def chat_stream(
-    agent: str,
-    message: str = Form(...),
-    files: List[UploadFile] = File(default=[]),
-):
-    if agent not in AGENTS:
-        raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
-
-    cwd = AGENTS[agent]["cwd"]
-    session_id = sessions[agent]
-
-    saved_files = await save_to_tmp(files, agent)
-
-    cmd = [config.get("claude_path", "claude")]
-    if session_id:
-        cmd += ["--resume", session_id]
-    cmd += [
-        "--input-format", "stream-json",
-        "--output-format", "stream-json",
-        "--verbose",
-        "-p",
-        "--dangerously-skip-permissions",
-    ]
-
-    content = build_content(message, saved_files)
-    input_msg = json.dumps({
-        "type": "user",
-        "message": {"role": "user", "content": content},
-    }) + "\n"
-
-    # プロキシ経由にするための環境変数
-    import os
-    env = os.environ.copy()
-    env["ANTHROPIC_BASE_URL"] = "http://localhost:8000/proxy"
-
-    async def generate():
+# --- バックグラウンドでclaude実行 ---
+async def _run_claude_background(agent: str, cmd: list, input_msg: str, env: dict):
+    state = stream_states[agent]
+    try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
-            cwd=cwd,
+            cwd=AGENTS[agent]["cwd"],
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -250,36 +215,94 @@ async def chat_stream(
         await proc.stdin.drain()
         proc.stdin.close()
 
-        try:
-            async for raw_line in proc.stdout:
-                line = raw_line.decode().strip()
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                    etype = event.get("type")
-                    if etype == "result" and event.get("session_id"):
-                        sessions[agent] = event["session_id"]
-                        _save_sessions()
-                        _update_agent_from_result(agent, event)
-                    elif etype == "rate_limit_event":
-                        info = event.get("rate_limit_info", {})
-                        resets_at = info.get("resetsAt")
-                        if resets_at:
-                            limit_type = info.get("rateLimitType", "")
-                            if "five_hour" in limit_type:
-                                shared_status["five_hour_resets_at"] = resets_at
-                            elif "seven_day" in limit_type:
-                                shared_status["seven_day_resets_at"] = resets_at
-                except json.JSONDecodeError:
-                    pass
-                yield f"data: {line}\n\n"
-        finally:
-            running_procs[agent] = None
+        async for raw_line in proc.stdout:
+            line = raw_line.decode().strip()
+            if not line:
+                continue
             try:
-                await proc.wait()
-            except Exception:
+                event = json.loads(line)
+                etype = event.get("type")
+                if etype == "result" and event.get("session_id"):
+                    sessions[agent] = event["session_id"]
+                    _save_sessions()
+                    _update_agent_from_result(agent, event)
+                elif etype == "rate_limit_event":
+                    info = event.get("rate_limit_info", {})
+                    resets_at = info.get("resetsAt")
+                    if resets_at:
+                        limit_type = info.get("rateLimitType", "")
+                        if "five_hour" in limit_type:
+                            shared_status["five_hour_resets_at"] = resets_at
+                        elif "seven_day" in limit_type:
+                            shared_status["seven_day_resets_at"] = resets_at
+            except json.JSONDecodeError:
                 pass
+            # バッファに追加（クライアントが切断していても継続）
+            state.buffer.append(f"data: {line}\n\n")
+
+        await proc.wait()
+    except Exception:
+        pass
+    finally:
+        running_procs[agent] = None
+        state.complete = True
+
+
+# --- エンドポイント ---
+
+@app.post("/chat/{agent}/stream")
+async def chat_stream(
+    agent: str,
+    message: str = Form(...),
+    files: List[UploadFile] = File(default=[]),
+):
+    if agent not in AGENTS:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
+
+    state = stream_states[agent]
+
+    # 前の会話が完了済み → 新しいメッセージとして処理
+    if state.complete:
+        saved_files = await save_to_tmp(files, agent)
+        session_id = sessions[agent]
+
+        cmd = [config.get("claude_path", "claude")]
+        if session_id:
+            cmd += ["--resume", session_id]
+        cmd += [
+            "--input-format", "stream-json",
+            "--output-format", "stream-json",
+            "--verbose",
+            "-p",
+            "--dangerously-skip-permissions",
+        ]
+
+        content = build_content(message, saved_files)
+        input_msg = json.dumps({
+            "type": "user",
+            "message": {"role": "user", "content": content},
+        }) + "\n"
+
+        env = os.environ.copy()
+        env["ANTHROPIC_BASE_URL"] = "http://localhost:8000/proxy"
+
+        # バッファをリセットして新しいバックグラウンドタスク開始
+        state.buffer = []
+        state.complete = False
+        state.task = asyncio.create_task(
+            _run_claude_background(agent, cmd, input_msg, env)
+        )
+
+    # バッファからクライアントにSSE送信（切断・再接続どちらでも先頭から）
+    async def generate():
+        sent = 0
+        while True:
+            while sent < len(state.buffer):
+                yield state.buffer[sent]
+                sent += 1
+            if state.complete and sent >= len(state.buffer):
+                break
+            await asyncio.sleep(0.05)
 
     return StreamingResponse(
         generate(),
@@ -292,6 +315,7 @@ async def chat_stream(
 async def chat_stop(agent: str):
     if agent not in AGENTS:
         raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
+
     proc = running_procs.get(agent)
     if proc:
         try:
@@ -299,6 +323,12 @@ async def chat_stop(agent: str):
         except Exception:
             pass
         running_procs[agent] = None
+
+    state = stream_states[agent]
+    if state.task and not state.task.done():
+        state.task.cancel()
+    state.complete = True
+
     return {"status": "stopped"}
 
 
@@ -320,7 +350,6 @@ def end_session(agent: str):
 def get_status(agent: str):
     if agent not in AGENTS:
         raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
-
     a = agent_status[agent]
     return {
         "model": a["model"],
@@ -353,10 +382,8 @@ async def anthropic_proxy(path: str, request: Request):
             content=body,
         )
 
-    # ヘッダーからrate limit情報を更新
     _update_shared_from_headers(resp.headers)
 
-    # レスポンスヘッダーを転送（hop-by-hopは除く）
     skip_headers = {"transfer-encoding", "connection", "keep-alive", "content-encoding"}
     response_headers = {
         k: v for k, v in resp.headers.items()
