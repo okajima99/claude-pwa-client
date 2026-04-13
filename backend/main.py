@@ -34,7 +34,24 @@ app.add_middleware(
 )
 
 # --- セッション管理 ---
-sessions: dict[str, str | None] = {name: None for name in AGENTS}
+SESSIONS_PATH = Path(__file__).parent / "sessions.json"
+
+
+def _load_sessions() -> dict[str, str | None]:
+    if SESSIONS_PATH.exists():
+        try:
+            data = json.loads(SESSIONS_PATH.read_text())
+            return {name: data.get(name) for name in AGENTS}
+        except Exception:
+            pass
+    return {name: None for name in AGENTS}
+
+
+def _save_sessions() -> None:
+    SESSIONS_PATH.write_text(json.dumps(sessions))
+
+
+sessions: dict[str, str | None] = _load_sessions()
 
 # --- 実行中プロセス管理 ---
 running_procs: dict[str, asyncio.subprocess.Process | None] = {}
@@ -156,6 +173,7 @@ async def chat_stream(
                     event = json.loads(line)
                     if event.get("type") == "result" and event.get("session_id"):
                         sessions[agent] = event["session_id"]
+                        _save_sessions()
                 except json.JSONDecodeError:
                     pass
                 yield f"data: {line}\n\n"
@@ -195,6 +213,7 @@ def end_session(agent: str):
         raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
 
     sessions[agent] = None
+    _save_sessions()
 
     # セッションのtmpファイルを削除
     for p in session_tmp_files.pop(agent, []):
@@ -215,12 +234,19 @@ def get_status(agent: str):
     if not log_path.exists():
         raise HTTPException(status_code=503, detail="rate-limits log not found")
 
+    agent_model = AGENTS[agent].get("model", "").lower()  # "sonnet" or "opus"
     last_line = None
     with open(log_path) as f:
         for line in f:
             line = line.strip()
-            if line:
-                last_line = line
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+                if agent_model in entry.get("model", "").lower():
+                    last_line = line
+            except json.JSONDecodeError:
+                pass
 
     if not last_line:
         raise HTTPException(status_code=503, detail="rate-limits log is empty")

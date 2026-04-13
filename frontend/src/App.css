@@ -78,9 +78,11 @@
   border-radius: 12px;
   font-size: 14px;
   line-height: 1.5;
-  white-space: pre-wrap;
   word-break: break-word;
 }
+
+.bubble > *:first-child { margin-top: 0; }
+.bubble > *:last-child { margin-bottom: 0; }
 
 .message.user .bubble {
   background: var(--accent);
@@ -226,6 +228,40 @@ button:disabled {
 .tool-bash { color: var(--green); }
 .tool-pending { opacity: 0.4; }
 
+/* thinking ブロック */
+.thinking-block {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.thinking-block summary {
+  cursor: pointer;
+  user-select: none;
+  opacity: 0.5;
+  padding: 2px 0;
+}
+
+.thinking-block summary:hover {
+  opacity: 0.8;
+}
+
+.thinking-text {
+  font-family: 'Menlo', 'Monaco', monospace;
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 4px 0 0;
+  opacity: 0.6;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 4px 8px;
+  background: var(--bg1);
+  border-radius: 4px;
+  border-left: 2px solid var(--border);
+}
+
 /* 添付ファイルプレビューバー */
 .attachments-bar {
   display: flex;
@@ -352,7 +388,7 @@ button:disabled {
 .bubble h2 { font-size: 15px; }
 .bubble h3 { font-size: 14px; }
 
-.bubble p { margin: 2px 0; }
+.bubble p { margin: 8px 0; }
 
 .bubble ul, .bubble ol {
   padding-left: 18px;

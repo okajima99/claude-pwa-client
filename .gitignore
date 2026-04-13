@@ -1,5 +1,6 @@
 config.json
 backend/config.json
+backend/sessions.json
 .env
 __pycache__/
 *.pyc

@@ -147,6 +147,10 @@ export default function App() {
                 .filter(b => b.type === 'text')
                 .map(b => b.text)
                 .join('')
+              const thinkingContent = event.message.content
+                .filter(b => b.type === 'thinking')
+                .map(b => b.thinking)
+                .join('\n')
               const newTools = event.message.content
                 .filter(b => b.type === 'tool_use')
                 .map(b => formatTool(b))
@@ -155,6 +159,7 @@ export default function App() {
                 const msgs = [...prev[agent]]
                 const last = { ...msgs[msgs.length - 1] }
                 if (textContent) last.text = textContent
+                if (thinkingContent) last.thinking = thinkingContent
                 if (newTools.length > 0) {
                   const existing = last.tools || []
                   const existingIds = new Set(existing.map(t => t.id))
@@ -235,7 +240,7 @@ export default function App() {
         {status ? (
           <>
             <span className="model">{status.model}</span>
-            <span className={pctClass(status.five_hour_pct)}>5h {Math.round(status.five_hour_pct)}% <span className="dim">{timeUntil(status.five_hour_resets_at)}</span></span>
+            <span className={pctClass(status.five_hour_resets_at < Date.now() / 1000 ? 0 : status.five_hour_pct)}>5h {status.five_hour_resets_at < Date.now() / 1000 ? 0 : Math.round(status.five_hour_pct)}% <span className="dim">{timeUntil(status.five_hour_resets_at)}</span></span>
             <span className={pctClass(status.seven_day_pct)}>7d {Math.round(status.seven_day_pct)}%</span>
             <span className={pctClass(status.context_pct)}>ctx {Math.round(status.context_pct)}%</span>
           </>
@@ -283,16 +288,24 @@ export default function App() {
                   </span>
                 )}
               </div>
-            ) : msg.role === 'agent' && msg.tools?.length > 0 ? (
+            ) : msg.role === 'agent' && (msg.tools?.length > 0 || msg.thinking) ? (
               <div className="agent-block">
-                <div className="tool-log">
-                  {msg.tools.map((t, ti) => (
-                    <div key={ti} className={`tool-line tool-${t.name.toLowerCase()}`}>
-                      {t.label}
-                    </div>
-                  ))}
-                  {msg.streaming && <div className="tool-line tool-pending">…</div>}
-                </div>
+                {msg.thinking && (
+                  <details className="thinking-block">
+                    <summary>💭 thinking</summary>
+                    <pre className="thinking-text">{msg.thinking}</pre>
+                  </details>
+                )}
+                {msg.tools?.length > 0 && (
+                  <div className="tool-log">
+                    {msg.tools.map((t, ti) => (
+                      <div key={ti} className={`tool-line tool-${t.name.toLowerCase()}`}>
+                        {t.label}
+                      </div>
+                    ))}
+                    {msg.streaming && <div className="tool-line tool-pending">…</div>}
+                  </div>
+                )}
                 {msg.text && (
                   <span className="bubble">
                     <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} />
@@ -430,7 +443,13 @@ function pctClass(pct) {
 }
 
 function timeUntil(unixSec) {
-  const diff = Math.max(0, unixSec - Date.now() / 1000)
+  const now = Date.now() / 1000
+  let resetAt = unixSec
+  if (resetAt < now) {
+    const periods = Math.ceil((now - resetAt) / (5 * 3600))
+    resetAt += periods * 5 * 3600
+  }
+  const diff = Math.max(0, resetAt - now)
   const h = Math.floor(diff / 3600)
   const m = Math.floor((diff % 3600) / 60)
   if (h > 0) return `${h}h${m}m`
