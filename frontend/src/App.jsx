@@ -351,6 +351,9 @@ export default function App() {
         <div className="buttons" ref={menuRef}>
           {menuOpen && (
             <div className="action-menu">
+              <button onClick={() => { fileInputRef.current?.click(); setMenuOpen(false) }} className="menu-item">
+                ファイル添付
+              </button>
               <button onClick={() => { setTreeOpen(true); setMenuOpen(false) }} className="menu-item">
                 ファイルツリー
               </button>
@@ -364,13 +367,6 @@ export default function App() {
             className={`more ${menuOpen ? 'active' : ''}`}
           >
             ⋯
-          </button>
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="attach-btn"
-            disabled={loading[activeAgent]}
-          >
-            ＋
           </button>
           {loading[activeAgent] ? (
             <button onClick={stopMessage} className="stop">■</button>

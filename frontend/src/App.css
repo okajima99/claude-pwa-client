@@ -296,11 +296,12 @@ button:disabled {
 }
 
 .msg-image {
-  max-width: 200px;
-  max-height: 200px;
+  width: 180px;
+  height: 180px;
   border-radius: 8px;
   object-fit: cover;
   display: block;
+  flex-shrink: 0;
 }
 
 .attach-files {
@@ -317,19 +318,6 @@ button:disabled {
   padding: 3px 8px;
   font-size: 11px;
   color: var(--text-dim);
-}
-
-/* 添付ボタン */
-.attach-btn {
-  background: var(--bg3);
-  color: var(--text-dim);
-  border: 1px solid var(--border);
-  font-size: 16px;
-  padding: 6px 10px;
-}
-
-.attach-btn:hover {
-  color: var(--text);
 }
 
 /* 停止ボタン */
