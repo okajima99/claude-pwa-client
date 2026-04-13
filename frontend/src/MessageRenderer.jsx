@@ -72,6 +72,9 @@ export default function MessageRenderer({ text, onOpenFile }) {
           if (!className) return <code className="inline-code">{children}</code>
           return <code className={className}>{children}</code>
         },
+        table({ children }) {
+          return <div className="table-wrapper"><table>{children}</table></div>
+        },
       }}
     >
       {text}
