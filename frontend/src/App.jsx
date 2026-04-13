@@ -242,7 +242,7 @@ export default function App() {
             <span className="model">{status.model}</span>
             <span className={pctClass(status.five_hour_resets_at < Date.now() / 1000 ? 0 : status.five_hour_pct)}>5h {status.five_hour_resets_at < Date.now() / 1000 ? 0 : Math.round(status.five_hour_pct)}% <span className="dim">{timeUntil(status.five_hour_resets_at)}</span></span>
             <span className={pctClass(status.seven_day_pct)}>7d {Math.round(status.seven_day_pct)}%</span>
-            <span className={pctClass(status.ctx_pct)}>ctx {Math.round(status.ctx_pct)}%</span>
+            <span className={pctClass(status.ctx_pct)}>ctx {Math.round(status.ctx_pct || 0)}%</span>
           </>
         ) : (
           <span className="dim">---</span>
