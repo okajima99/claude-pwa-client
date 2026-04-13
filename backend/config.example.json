@@ -1,0 +1,11 @@
+{
+  "agents": {
+    "agent_a": {
+      "cwd": "/path/to/agent_a"
+    },
+    "agent_b": {
+      "cwd": "/path/to/agent_b"
+    }
+  },
+  "rate_limits_log": "/path/to/rate-limits.jsonl"
+}
