@@ -2,10 +2,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { visit } from 'unist-util-visit'
 
-// remarkプラグイン用（バッククォート直後は除外）
 const PATH_RE = /(?<![(`])(~\/[^\s`"')\]]+|\/Users\/[^\s`"')\]]+)/g
-// Markdownオフ用（バッククォート内も含めて検出）
-const PATH_RE_PLAIN = /(~\/[^\s`"')\]]+|\/Users\/[^\s`"')\]]+)/g
 
 // remarkプラグイン: テキストノード内のファイルパスをlinkノードに変換
 function remarkFilePaths() {
@@ -51,24 +48,7 @@ function remarkFilePaths() {
   }
 }
 
-export default function MessageRenderer({ text, onOpenFile, markdown }) {
-  if (!markdown) {
-    const parts = []
-    let last = 0
-    let match
-    PATH_RE_PLAIN.lastIndex = 0
-    while ((match = PATH_RE_PLAIN.exec(text)) !== null) {
-      if (match.index > last) parts.push(text.slice(last, match.index))
-      const p = match[0]
-      parts.push(
-        <span key={match.index} className="file-link" onClick={() => onOpenFile(p)}>{p}</span>
-      )
-      last = match.index + p.length
-    }
-    if (last < text.length) parts.push(text.slice(last))
-    return <span style={{ whiteSpace: 'pre-wrap' }}>{parts}</span>
-  }
-
+export default function MessageRenderer({ text, onOpenFile }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkFilePaths]}

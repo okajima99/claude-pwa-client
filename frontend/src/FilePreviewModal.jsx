@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 
@@ -6,6 +8,8 @@ export default function FilePreviewModal({ path, onClose }) {
   const [content, setContent] = useState(null)
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(true)
+
+  const isMarkdown = /\.(md|mdx)$/i.test(path)
 
   useEffect(() => {
     setLoading(true)
@@ -28,7 +32,15 @@ export default function FilePreviewModal({ path, onClose }) {
           {loading && <span className="dim">読み込み中...</span>}
           {error && <span className="error">{error}</span>}
           {content !== null && (
-            <pre className="file-content">{content}</pre>
+            isMarkdown ? (
+              <div className="md-preview">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {content}
+                </ReactMarkdown>
+              </div>
+            ) : (
+              <pre className="file-content">{content}</pre>
+            )
           )}
         </div>
       </div>
