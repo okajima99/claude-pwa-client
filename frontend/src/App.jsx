@@ -233,7 +233,7 @@ export default function App() {
       }
     } catch (e) {
       if (e.name === 'AbortError') return
-      // バックグラウンドで処理中なら自動再接続、そうでなければ送信失敗
+      // バックグラウンドで処理中 or 既に応答が届いている場合はエラーを出さない
       try {
         const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json())
         if (s.streaming) {
@@ -241,10 +241,13 @@ export default function App() {
           return
         }
       } catch {}
-      setMessages(prev => ({
-        ...prev,
-        [agent]: [...prev[agent], { role: 'error', text: '送信失敗' }],
-      }))
+      // 最後のagentメッセージにテキストが既にある = 応答は届いているので送信失敗は出さない
+      setMessages(prev => {
+        const msgs = prev[agent]
+        const last = msgs[msgs.length - 1]
+        if (last?.role === 'agent' && (last.text || last.tools?.length > 0)) return prev
+        return { ...prev, [agent]: [...msgs, { role: 'error', text: '送信失敗' }] }
+      })
     } finally {
       setLoading(prev => ({ ...prev, [agent]: false }))
       setMessages(prev => {
