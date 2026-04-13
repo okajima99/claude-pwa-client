@@ -363,8 +363,8 @@ def get_status(agent: str):
 
 
 @app.get("/chat/{agent}/reconnect")
-async def reconnect_stream(agent: str):
-    """バックグラウンドで処理中のストリームに再接続する"""
+async def reconnect_stream(agent: str, from_pos: int = Query(default=0, alias="from")):
+    """バックグラウンドで処理中のストリームに再接続する。from=N で既読位置以降だけ送信"""
     if agent not in AGENTS:
         raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
 
@@ -373,7 +373,7 @@ async def reconnect_stream(agent: str):
         return Response(status_code=204)  # 処理中なし
 
     async def generate():
-        sent = 0
+        sent = max(0, from_pos)  # クライアントが既に受け取った位置から再開
         while True:
             while sent < len(state.buffer):
                 yield state.buffer[sent]

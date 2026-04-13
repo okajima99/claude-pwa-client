@@ -31,6 +31,21 @@ export default function App() {
   const fileInputRef = useRef(null)
   const reconnectingRef = useRef({ agent_a: false, agent_b: false })
 
+  // バッファ消費済み位置（エージェントごと）— localStorageで永続化してスワイプ切り後も復元
+  const bufferPosRef = useRef(null)
+  if (bufferPosRef.current === null) {
+    try {
+      const saved = localStorage.getItem('cpc_bufpos')
+      bufferPosRef.current = saved ? JSON.parse(saved) : { agent_a: 0, agent_b: 0 }
+    } catch {
+      bufferPosRef.current = { agent_a: 0, agent_b: 0 }
+    }
+  }
+  const saveBufPos = (agent, pos) => {
+    bufferPosRef.current[agent] = pos
+    localStorage.setItem('cpc_bufpos', JSON.stringify(bufferPosRef.current))
+  }
+
   useEffect(() => {
     const fetchStatus = async () => {
       try {
@@ -134,6 +149,10 @@ export default function App() {
     const controller = new AbortController()
     abortControllers.current[agent] = controller
 
+    // 新しいメッセージ開始 → サーバー側バッファもリセットされるのでpos初期化
+    saveBufPos(agent, 0)
+    let localPos = 0
+
     try {
       const formData = new FormData()
       formData.append('message', text)
@@ -165,6 +184,10 @@ export default function App() {
           if (!line.startsWith('data: ')) continue
           const data = line.slice(6).trim()
           if (!data) continue
+
+          // 受信するたびに位置を更新（切断時に再開できるように）
+          localPos++
+          saveBufPos(agent, localPos)
 
           try {
             const event = JSON.parse(data)
@@ -228,7 +251,9 @@ export default function App() {
   }
 
   const reconnectStream = async (agent) => {
-    const res = await fetch(`${API_BASE}/chat/${agent}/reconnect`)
+    // 既読位置以降だけ受け取る（バックグラウンド中に進んだ分 or 初回から）
+    const fromPos = bufferPosRef.current[agent] ?? 0
+    const res = await fetch(`${API_BASE}/chat/${agent}/reconnect?from=${fromPos}`)
     if (res.status === 204) return  // 処理中なし
 
     setLoading(prev => ({ ...prev, [agent]: true }))
@@ -242,6 +267,7 @@ export default function App() {
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
     let buf = ''
+    let localPos = fromPos
     try {
       while (true) {
         const { done, value } = await reader.read()
@@ -253,6 +279,10 @@ export default function App() {
           if (!line.startsWith('data: ')) continue
           const data = line.slice(6).trim()
           if (!data) continue
+
+          localPos++
+          saveBufPos(agent, localPos)
+
           try {
             const event = JSON.parse(data)
             if (event.type === 'assistant' && event.message?.content) {
