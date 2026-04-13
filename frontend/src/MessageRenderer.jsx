@@ -1,12 +1,22 @@
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-const PATH_RE = /(~\/[^\s`"')\]]+|\/Users\/[^\s`"')\]]+)/g
+const PATH_PLAIN_RE = /(~\/[^\s`"')\]]+|\/Users\/[^\s`"')\]]+)/g
+const PATH_BACKTICK_RE = /`(~\/[^`\s]+|\/Users\/[^`\s]+)`/g
 
 function preprocessPaths(text) {
-  return text.replace(PATH_RE, (match) =>
-    `[${match}](cpc://${encodeURIComponent(match)})`
+  // バッククォート囲みのパスを先に変換（`~/...` → [~/...](cpc://...)）
+  let result = text.replace(PATH_BACKTICK_RE, (_, path) =>
+    `[${path}](cpc://${encodeURIComponent(path)})`
   )
+  // 残りのプレーンなパスを変換（すでにリンク化済みは除く）
+  result = result.replace(PATH_PLAIN_RE, (match, offset, str) => {
+    // 直前が ] や ( ならすでにリンク内なのでスキップ
+    const before = str[offset - 1]
+    if (before === '(' || before === ']') return match
+    return `[${match}](cpc://${encodeURIComponent(match)})`
+  })
+  return result
 }
 
 export default function MessageRenderer({ text, onOpenFile, markdown }) {
@@ -14,8 +24,8 @@ export default function MessageRenderer({ text, onOpenFile, markdown }) {
     const parts = []
     let last = 0
     let match
-    PATH_RE.lastIndex = 0
-    while ((match = PATH_RE.exec(text)) !== null) {
+    PATH_PLAIN_RE.lastIndex = 0
+    while ((match = PATH_PLAIN_RE.exec(text)) !== null) {
       if (match.index > last) parts.push(text.slice(last, match.index))
       const p = match[0]
       parts.push(
@@ -32,6 +42,7 @@ export default function MessageRenderer({ text, onOpenFile, markdown }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
+      urlTransform={(url) => url}
       components={{
         a({ href, children }) {
           if (href?.startsWith('cpc://')) {
@@ -48,18 +59,7 @@ export default function MessageRenderer({ text, onOpenFile, markdown }) {
           return <pre className="md-code">{children}</pre>
         },
         code({ className, children }) {
-          if (!className) {
-            // インラインコード: パスだったらリンク化
-            const content = String(children).trim()
-            if (/^(~\/|\/Users\/)/.test(content)) {
-              return (
-                <span className="file-link" onClick={() => onOpenFile(content)}>
-                  {children}
-                </span>
-              )
-            }
-            return <code className="inline-code">{children}</code>
-          }
+          if (!className) return <code className="inline-code">{children}</code>
           return <code className={className}>{children}</code>
         },
       }}
