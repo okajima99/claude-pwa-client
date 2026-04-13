@@ -232,6 +232,13 @@ export default function App() {
     if (res.status === 204) return  // 処理中なし
 
     setLoading(prev => ({ ...prev, [agent]: true }))
+    // 受け皿を追加（ストリーミング中に表示を更新するため）
+    setMessages(prev => {
+      const msgs = prev[agent]
+      const last = msgs[msgs.length - 1]
+      if (last?.role === 'agent' && last?.streaming) return prev
+      return { ...prev, [agent]: [...msgs, { role: 'agent', text: '', tools: [], streaming: true }] }
+    })
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
     let buf = ''
