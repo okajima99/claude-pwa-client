@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, useMemo, lazy, Suspense } from 'react'
-import { Virtuoso } from 'react-virtuoso'
 import LZString from 'lz-string'
 const { compressToUTF16, decompressFromUTF16 } = LZString
 import './App.css'
@@ -9,8 +8,6 @@ const FileTreePanel = lazy(() => import('./FileTreePanel.jsx'))
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 
-// Virtuoso Footer: padding-bottom の代替。スクロール内容の一部にすることで align:'end' が正しく計算される
-const ListFooter = () => <div style={{ height: '12px' }} />
 const AGENTS = ['agent_a', 'agent_b']
 const SUPPORTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
 const MAX_MESSAGES = 200
@@ -76,7 +73,7 @@ export default function App() {
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const [hasNew, setHasNew] = useState(false)
   const isAtBottomRef = useRef(true)
-  const virtuosoRef = useRef(null)
+  const scrollerDomRef = useRef(null)
   const msgLengthRef = useRef({ agent_a: 0, agent_b: 0 })
   const menuRef = useRef(null)
   const abortControllers = useRef({ agent_a: null, agent_b: null })
@@ -258,25 +255,33 @@ export default function App() {
     }, 500)
   }, [input])
 
-  const scrollToBottom = () => {
-    virtuosoRef.current?.scrollTo({ top: 999999, behavior: 'smooth' })
-    setHasNew(false)
+  const scrollToBottom = (behavior = 'auto') => {
+    const el = scrollerDomRef.current
+    if (!el) return
+    if (behavior === 'smooth') {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+      setHasNew(false)
+    } else {
+      el.scrollTop = el.scrollHeight
+    }
   }
 
   // 新着メッセージ時の自動スクロール（タブ切り替えは別のuseEffect）
-  // - 新規アイテム追加時: followOutput="smooth" が担う → ここでは触らない（上書きするとinstantになる）
-  // - ストリーミング中の内容更新（アイテム数変化なし）: followOutput は検知できないのでここで 'auto' スクロール
   useEffect(() => {
     const currentLen = messages[activeAgent].length
     const prevLen = msgLengthRef.current[activeAgent]
     msgLengthRef.current[activeAgent] = currentLen
 
     if (currentLen > prevLen) {
-      // 新規追加 → followOutput に任せる。未読通知だけ更新
-      if (!isAtBottomRef.current) setHasNew(true)
+      // 新規アイテム追加: 最下部にいれば追従、そうでなければ未読通知
+      if (isAtBottomRef.current) {
+        requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) })
+      } else {
+        setHasNew(true)
+      }
     } else if (isAtBottomRef.current) {
-      // ストリーミング中の内容更新のみ
-      virtuosoRef.current?.scrollTo({ top: 999999, behavior: 'auto' })
+      // ストリーミング中の内容更新（アイテム数変化なし）
+      scrollToBottom()
     }
   }, [messages])
 
@@ -286,17 +291,14 @@ export default function App() {
     setShowScrollBtn(false)
     setHasNew(false)
     msgLengthRef.current[activeAgent] = messages[activeAgent].length
-    requestAnimationFrame(() => {
-      virtuosoRef.current?.scrollTo({ top: 999999, behavior: 'auto' })
-    })
+    // 2段階rAF: DOMレンダリング完了を待つ
+    requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) })
   }, [activeAgent])
 
-  // 画面回転時：最下部にいた場合はVirtuosoが保持するが念のため追従
+  // 画面回転時：最下部にいた場合は追従
   useEffect(() => {
     const onResize = () => {
-      if (isAtBottomRef.current) {
-        virtuosoRef.current?.scrollTo({ top: 999999, behavior: 'auto' })
-      }
+      if (isAtBottomRef.current) scrollToBottom()
     }
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
@@ -385,6 +387,10 @@ export default function App() {
       ...prev,
       [agent]: [...prev[agent], { id: generateId(), role: 'agent', text: '', tools: [], streaming: true }].slice(-MAX_MESSAGES),
     }))
+
+    // 送信時は常に最下部へ（followOutputの内部状態に依存しない）
+    isAtBottomRef.current = true
+    requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) })
 
     const controller = new AbortController()
     abortControllers.current[agent] = controller
@@ -528,7 +534,7 @@ export default function App() {
         }
         return { ...prev, [agent]: msgs }
       })
-      virtuosoRef.current?.scrollTo({ top: 999999, behavior: 'auto' })
+      requestAnimationFrame(() => { scrollToBottom() })
     }
   }
 
@@ -606,29 +612,28 @@ export default function App() {
 
       {/* メッセージ一覧 */}
       <div className="messages-container">
-        <Virtuoso
-          ref={virtuosoRef}
+        <div
+          ref={scrollerDomRef}
           className="messages"
-          data={displayMessages}
-          computeItemKey={(_, msg) => msg.id}
-          followOutput="smooth"
-          atBottomStateChange={(atBottom) => {
+          onScroll={() => {
+            const el = scrollerDomRef.current
+            if (!el) return
+            const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30
             isAtBottomRef.current = atBottom
             setShowScrollBtn(!atBottom)
             if (atBottom) setHasNew(false)
           }}
-          atBottomThreshold={30}
-          components={{ Footer: ListFooter }}
-          itemContent={(_, msg) => {
+        >
+          {displayMessages.map((msg) => {
             if (msg.role === '__loading__') {
               return (
-                <div className="message agent">
+                <div key={msg.id} className="message agent">
                   <span className="bubble dim">…</span>
                 </div>
               )
             }
             return (
-              <div className={`message ${msg.role}`}>
+              <div key={msg.id} className={`message ${msg.role}`}>
                 {msg.role === 'user' && (msg.imageUrls?.length > 0 || msg.fileNames?.length > 0) ? (
                   <div className="user-block">
                     {msg.imageUrls?.length > 0 && (
@@ -682,12 +687,12 @@ export default function App() {
                 )}
               </div>
             )
-          }}
-        />
+          })}
+        </div>
 
         {/* ↓ スクロールボタン */}
         {showScrollBtn && (
-          <button className="scroll-btn" onClick={scrollToBottom}>
+          <button className="scroll-btn" onClick={() => scrollToBottom('smooth')}>
             ↓
             {hasNew && <span className="scroll-dot" />}
           </button>
