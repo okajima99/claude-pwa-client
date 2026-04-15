@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, lazy, Suspense } from 'react'
-import { compressToUTF16, decompressFromUTF16 } from 'lz-string'
+import LZString from 'lz-string'
+const { compressToUTF16, decompressFromUTF16 } = LZString
 import './App.css'
 import MessageRenderer from './MessageRenderer.jsx'
 const FilePreviewModal = lazy(() => import('./FilePreviewModal.jsx'))
