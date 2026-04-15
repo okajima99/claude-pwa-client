@@ -9,7 +9,14 @@ const AGENTS = ['agent_a', 'agent_b']
 const SUPPORTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
 
 export default function App() {
-  const [activeAgent, setActiveAgent] = useState('agent_a')
+  const [activeAgent, setActiveAgent] = useState(() => {
+    try {
+      const saved = localStorage.getItem('cpc_active_agent')
+      return saved && AGENTS.includes(saved) ? saved : 'agent_a'
+    } catch {
+      return 'agent_a'
+    }
+  })
   const [messages, setMessages] = useState(() => {
     try {
       const saved = localStorage.getItem('cpc_messages')
@@ -18,7 +25,14 @@ export default function App() {
       return { agent_a: [], agent_b: [] }
     }
   })
-  const [input, setInput] = useState({ agent_a: '', agent_b: '' })
+  const [input, setInput] = useState(() => {
+    try {
+      const saved = localStorage.getItem('cpc_input')
+      return saved ? JSON.parse(saved) : { agent_a: '', agent_b: '' }
+    } catch {
+      return { agent_a: '', agent_b: '' }
+    }
+  })
   const [attachments, setAttachments] = useState({ agent_a: [], agent_b: [] })
   const [loading, setLoading] = useState({ agent_a: false, agent_b: false })
   const [status, setStatus] = useState(null)
@@ -75,6 +89,10 @@ export default function App() {
     }
     localStorage.setItem('cpc_messages', JSON.stringify(toSave))
   }, [messages])
+
+  useEffect(() => {
+    localStorage.setItem('cpc_input', JSON.stringify(input))
+  }, [input])
 
   // スクロールハンドラ
   const handleScroll = () => {
@@ -280,16 +298,25 @@ export default function App() {
 
               setMessages(prev => {
                 const msgs = [...prev[agent]]
-                const last = { ...msgs[msgs.length - 1] }
-                if (textContent) last.text = textContent
-                if (thinkingContent) last.thinking = thinkingContent
+                const last = msgs[msgs.length - 1]
+                // ツール使用済みのバブルにテキストのみの新ターンが来たら新バブルを追加
+                const needsNewBubble = last?.role === 'agent' &&
+                  last?.tools?.length > 0 &&
+                  textContent &&
+                  newTools.length === 0
+                if (needsNewBubble) {
+                  return { ...prev, [agent]: [...msgs, { role: 'agent', text: textContent, tools: [], streaming: true }] }
+                }
+                const updated = { ...last }
+                if (textContent) updated.text = textContent
+                if (thinkingContent) updated.thinking = thinkingContent
                 if (newTools.length > 0) {
-                  const existing = last.tools || []
+                  const existing = updated.tools || []
                   const existingIds = new Set(existing.map(t => t.id))
                   const toAdd = newTools.filter(t => !existingIds.has(t.id))
-                  if (toAdd.length > 0) last.tools = [...existing, ...toAdd]
+                  if (toAdd.length > 0) updated.tools = [...existing, ...toAdd]
                 }
-                msgs[msgs.length - 1] = last
+                msgs[msgs.length - 1] = updated
                 return { ...prev, [agent]: msgs }
               })
             }
@@ -337,6 +364,7 @@ export default function App() {
     const res = await fetch(`${API_BASE}/chat/${agent}/reconnect?from=${fromPos}`)
     if (res.status === 204) return false
 
+    isAtBottomRef.current = true
     setLoading(prev => ({ ...prev, [agent]: true }))
     setMessages(prev => {
       const msgs = prev[agent]
@@ -375,6 +403,10 @@ export default function App() {
                 if (!last || last.role !== 'agent') {
                   return { ...prev, [agent]: [...msgs, { role: 'agent', text: textContent, tools: newTools, thinking: thinkingContent || undefined, streaming: true }] }
                 }
+                const needsNewBubble = last.tools?.length > 0 && textContent && newTools.length === 0
+                if (needsNewBubble) {
+                  return { ...prev, [agent]: [...msgs, { role: 'agent', text: textContent, tools: [], streaming: true }] }
+                }
                 const updated = { ...last }
                 if (textContent) updated.text = textContent
                 if (thinkingContent) updated.thinking = thinkingContent
@@ -401,6 +433,19 @@ export default function App() {
         }
         return { ...prev, [agent]: msgs }
       })
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const el = messagesRef.current
+          if (el) {
+            el.scrollTop = 999999
+            isAtBottomRef.current = true
+          }
+        })
+      })
+      setTimeout(() => {
+        const el = messagesRef.current
+        if (el) el.scrollTop = 999999
+      }, 300)
     }
   }
 
@@ -436,13 +481,6 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [menuOpen])
 
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      sendMessage()
-    }
-  }
-
   const currentAttachments = attachments[activeAgent]
 
   return (
@@ -467,7 +505,7 @@ export default function App() {
           <button
             key={agent}
             className={`tab ${activeAgent === agent ? 'active' : ''}`}
-            onClick={() => setActiveAgent(agent)}
+            onClick={() => { setActiveAgent(agent); localStorage.setItem('cpc_active_agent', agent) }}
           >
             {agent.toUpperCase()}
           </button>
@@ -578,7 +616,6 @@ export default function App() {
         <textarea
           value={input[activeAgent]}
           onChange={e => setInput(prev => ({ ...prev, [activeAgent]: e.target.value }))}
-          onKeyDown={handleKeyDown}
           placeholder="メッセージを入力..."
           rows={2}
           disabled={loading[activeAgent]}

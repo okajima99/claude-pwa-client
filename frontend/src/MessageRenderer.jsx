@@ -1,3 +1,4 @@
+import React from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { visit } from 'unist-util-visit'
@@ -48,7 +49,7 @@ function remarkFilePaths() {
   }
 }
 
-export default function MessageRenderer({ text, onOpenFile }) {
+const MessageRenderer = React.memo(function MessageRenderer({ text, onOpenFile }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkFilePaths]}
@@ -80,4 +81,6 @@ export default function MessageRenderer({ text, onOpenFile }) {
       {text}
     </ReactMarkdown>
   )
-}
+})
+
+export default MessageRenderer
