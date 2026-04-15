@@ -245,7 +245,7 @@ export default function App() {
         toSave[agent] = messages[agent].slice(-MAX_MESSAGES)
       }
       localStorage.setItem('cpc_messages', compressToUTF16(JSON.stringify(toSave)))
-    }, 500)
+    }, 1000)
   }, [messages])
 
   useEffect(() => {
@@ -328,12 +328,24 @@ export default function App() {
   // アプリ起動時チェック
   useEffect(() => { checkAndReconnect() }, [])
 
+  // オフライン復帰時チェック
+  useEffect(() => {
+    const handle = () => checkAndReconnect(true)
+    window.addEventListener('online', handle)
+    return () => window.removeEventListener('online', handle)
+  }, [])
+
   // アプリ復帰時チェック
   useEffect(() => {
-    const handle = () => { if (!document.hidden) checkAndReconnect(true) }
+    const handle = () => {
+      if (!document.hidden) {
+        checkAndReconnect(true)
+        requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) })
+      }
+    }
     document.addEventListener('visibilitychange', handle)
     return () => document.removeEventListener('visibilitychange', handle)
-  }, [loading])
+  }, [])
 
   const handleFileSelect = (e) => {
     const agent = activeAgent
@@ -368,9 +380,9 @@ export default function App() {
     const fileNames = items.filter(item => !item.url).map(item => item.file.name)
 
     // 送信前に base64 変換（リロード後も表示できるよう data URL として保存）
-    const imageUrls = await Promise.all(
-      imageItems.map(item => fileToBase64(item.file).catch(() => item.url))
-    )
+    const imageUrls = (await Promise.all(
+      imageItems.map(item => fileToBase64(item.file).catch(() => null))
+    )).filter(Boolean)
     // 変換済みなので BlobURL は解放
     imageItems.forEach(item => URL.revokeObjectURL(item.url))
 
@@ -442,6 +454,15 @@ export default function App() {
           } catch {}
         }
       }
+
+      // ストリームが静かに切れた場合（doneだがClaudeはまだ処理中）の再接続
+      try {
+        const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json()).catch(() => null)
+        if (s?.streaming) {
+          await reconnectStream(agent)
+          return
+        }
+      } catch {}
     } catch (e) {
       if (e.name === 'AbortError') return
       const errText = describeError(e)
@@ -465,7 +486,9 @@ export default function App() {
       }
     } finally {
       cancelAndFlush(agent)
-      saveBufPos(agent, localPos)
+      // reconnectStreamが更新した位置を上書きしないようMathMaxで保護
+      bufferPosRef.current[agent] = Math.max(bufferPosRef.current[agent], localPos)
+      localStorage.setItem('cpc_bufpos', JSON.stringify(bufferPosRef.current))
       setLoading(prev => ({ ...prev, [agent]: false }))
       setMessages(prev => {
         const msgs = [...prev[agent]]
@@ -502,6 +525,7 @@ export default function App() {
     const decoder = new TextDecoder()
     let buf = ''
     let localPos = fromPos
+    let needsReconnect = false
     try {
       while (true) {
         const { done, value } = await reader.read()
@@ -522,6 +546,13 @@ export default function App() {
           } catch {}
         }
       }
+
+      // ストリームが静かに切れた場合の再接続チェック
+      try {
+        const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json()).catch(() => null)
+        if (s?.streaming) needsReconnect = true
+      } catch {}
+
       return true
     } finally {
       cancelAndFlush(agent)
@@ -535,6 +566,7 @@ export default function App() {
         return { ...prev, [agent]: msgs }
       })
       requestAnimationFrame(() => { scrollToBottom() })
+      if (needsReconnect) setTimeout(() => reconnectStream(agent), 100)
     }
   }
 

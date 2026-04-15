@@ -49,7 +49,7 @@ export default function FilePreviewModal({ path, onClose }) {
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(true)
 
-  const ext = path.split('.').pop().toLowerCase()
+  const ext = (path.includes('.') ? path.split('.').pop() : '').toLowerCase()
   const isMarkdown = /\.(md|mdx)$/i.test(path)
   const lang = EXT_TO_LANG[ext] || null
 
@@ -59,12 +59,21 @@ export default function FilePreviewModal({ path, onClose }) {
     setError(null)
     setContent(null)
     fetch(`${API_BASE}/file?path=${encodeURIComponent(path)}`, { signal: controller.signal })
-      .then(r => r.ok ? r.json() : Promise.reject(r.status))
+      .then(r => {
+        if (r.status === 413) return r.json().then(d => Promise.reject(d.detail || 'ファイルが大きすぎます'))
+        return r.ok ? r.json() : Promise.reject(`HTTP ${r.status}`)
+      })
       .then(data => setContent(data.content))
-      .catch(e => { if (e.name !== 'AbortError') setError(`読み込みエラー (${e})`) })
+      .catch(e => { if (e.name !== 'AbortError') setError(typeof e === 'string' ? e : `読み込みエラー`) })
       .finally(() => setLoading(false))
     return () => controller.abort()
   }, [path])
+
+  useEffect(() => {
+    const onKeyDown = (e) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
 
   return (
     <div className="modal-overlay" onClick={onClose}>

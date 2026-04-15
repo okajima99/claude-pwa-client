@@ -306,12 +306,18 @@ async def chat_stream(
     # バッファからクライアントにSSE送信（切断・再接続どちらでも先頭から）
     async def generate():
         sent = 0
+        last_heartbeat = asyncio.get_event_loop().time()
         while True:
             while sent < len(state.buffer):
                 yield state.buffer[sent]
                 sent += 1
+                last_heartbeat = asyncio.get_event_loop().time()
             if state.complete and sent >= len(state.buffer):
                 break
+            now = asyncio.get_event_loop().time()
+            if now - last_heartbeat >= 15:
+                yield ": ping\n\n"
+                last_heartbeat = now
             await asyncio.sleep(0.05)
 
     return StreamingResponse(
@@ -384,12 +390,18 @@ async def reconnect_stream(agent: str, from_pos: int = Query(default=0, alias="f
 
     async def generate():
         sent = max(0, from_pos)  # クライアントが既に受け取った位置から再開
+        last_heartbeat = asyncio.get_event_loop().time()
         while True:
             while sent < len(state.buffer):
                 yield state.buffer[sent]
                 sent += 1
+                last_heartbeat = asyncio.get_event_loop().time()
             if state.complete and sent >= len(state.buffer):
                 break
+            now = asyncio.get_event_loop().time()
+            if now - last_heartbeat >= 15:
+                yield ": ping\n\n"
+                last_heartbeat = now
             await asyncio.sleep(0.05)
 
     return StreamingResponse(
@@ -442,6 +454,8 @@ def _resolve_safe(path_str: str) -> Path:
     return resolved
 
 
+FILE_SIZE_LIMIT = 1 * 1024 * 1024  # 1MB
+
 @app.get("/file")
 def get_file(path: str = Query(...)):
     resolved = _resolve_safe(path)
@@ -449,6 +463,8 @@ def get_file(path: str = Query(...)):
         raise HTTPException(status_code=404, detail="File not found")
     if not resolved.is_file():
         raise HTTPException(status_code=400, detail="Not a file")
+    if resolved.stat().st_size > FILE_SIZE_LIMIT:
+        raise HTTPException(status_code=413, detail=f"ファイルが大きすぎます（上限 1MB）")
     try:
         content = resolved.read_text(errors="replace")
     except Exception as e:

@@ -8,6 +8,7 @@ export default function FileTreePanel({ onOpenFile, onClose }) {
   const [entries, setEntries] = useState([])
   const [history, setHistory] = useState([])
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
 
   useEffect(() => {
     loadDir(currentPath)
@@ -15,13 +16,14 @@ export default function FileTreePanel({ onOpenFile, onClose }) {
 
   const loadDir = (path) => {
     setLoading(true)
+    setError(null)
     fetch(`${API_BASE}/files/tree?path=${encodeURIComponent(path)}`)
-      .then(r => r.json())
+      .then(r => r.ok ? r.json() : Promise.reject(r.status))
       .then(data => {
         setCurrentPath(data.path)
         setEntries(data.entries)
       })
-      .catch(() => {})
+      .catch(e => setError(`読み込みエラー (${e})`))
       .finally(() => setLoading(false))
   }
 
@@ -48,15 +50,14 @@ export default function FileTreePanel({ onOpenFile, onClose }) {
       <div className="tree-panel" onClick={e => e.stopPropagation()}>
         <div className="tree-header">
           <div className="tree-nav">
-            {history.length > 0 && (
-              <button className="tree-back" onClick={handleBack}>←</button>
-            )}
+            <button className="tree-back" onClick={handleBack} disabled={history.length === 0}>←</button>
             <span className="tree-path">{displayPath}</span>
           </div>
           <button className="modal-close" onClick={onClose}>✕</button>
         </div>
         <div className="tree-body">
           {loading && <span className="dim tree-loading">読み込み中...</span>}
+          {error && <span className="error tree-loading">{error}</span>}
           {entries.map(entry => (
             <div
               key={entry.path}

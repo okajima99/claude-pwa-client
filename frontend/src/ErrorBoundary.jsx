@@ -36,22 +36,38 @@ export default class ErrorBoundary extends Component {
             overflow: 'auto',
             margin: 0,
           }}>
-            {this.state.error?.message}
+            {this.state.error?.stack || this.state.error?.message}
           </pre>
-          <button
-            onClick={() => window.location.reload()}
-            style={{
-              padding: '8px 20px',
-              background: '#333',
-              color: '#ccc',
-              border: '1px solid #555',
-              borderRadius: '6px',
-              cursor: 'pointer',
-              fontSize: '14px',
-            }}
-          >
-            リロード
-          </button>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button
+              onClick={() => window.location.reload()}
+              style={{
+                padding: '8px 20px',
+                background: '#333',
+                color: '#ccc',
+                border: '1px solid #555',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontSize: '14px',
+              }}
+            >
+              リロード
+            </button>
+            <button
+              onClick={() => { localStorage.clear(); window.location.reload() }}
+              style={{
+                padding: '8px 20px',
+                background: '#2a1a1a',
+                color: '#aaa',
+                border: '1px solid #553333',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontSize: '14px',
+              }}
+            >
+              データ消去して再起動
+            </button>
+          </div>
         </div>
       )
     }

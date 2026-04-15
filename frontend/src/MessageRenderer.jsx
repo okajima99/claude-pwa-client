@@ -60,7 +60,8 @@ const MessageRenderer = React.memo(function MessageRenderer({ text, onOpenFile, 
       components={{
         a({ href, children }) {
           if (href?.startsWith('cpc://')) {
-            const path = decodeURIComponent(href.slice('cpc://'.length))
+            let path
+            try { path = decodeURIComponent(href.slice('cpc://'.length)) } catch { path = href.slice('cpc://'.length) }
             return (
               <span className="file-link" onClick={() => onOpenFile(path)}>
                 {children}
