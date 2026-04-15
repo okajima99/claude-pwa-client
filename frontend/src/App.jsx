@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, lazy, Suspense } from 'react'
+import { useState, useEffect, useRef, useMemo, lazy, Suspense } from 'react'
+import { Virtuoso } from 'react-virtuoso'
 import LZString from 'lz-string'
 const { compressToUTF16, decompressFromUTF16 } = LZString
 import './App.css'
@@ -72,8 +73,7 @@ export default function App() {
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const [hasNew, setHasNew] = useState(false)
   const isAtBottomRef = useRef(true)
-  const messagesRef = useRef(null)
-  const bottomRef = useRef(null)
+  const virtuosoRef = useRef(null)
   const msgLengthRef = useRef({ agent_a: 0, agent_b: 0 })
   const menuRef = useRef(null)
   const abortControllers = useRef({ agent_a: null, agent_b: null })
@@ -240,80 +240,45 @@ export default function App() {
     }, 500)
   }, [input])
 
-  // スクロールハンドラ
-  const handleScroll = () => {
-    const el = messagesRef.current
-    if (!el) return
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30
-    isAtBottomRef.current = atBottom
-    setShowScrollBtn(!atBottom)
-    if (atBottom) setHasNew(false)
-  }
-
   const scrollToBottom = () => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'smooth' })
     setHasNew(false)
   }
 
   // 新着メッセージ時の自動スクロール（タブ切り替えは別のuseEffect）
+  // ストリーミング中の内容更新（アイテム数変化なし）は followOutput が拾えないため明示的にスクロール
   useEffect(() => {
     const currentLen = messages[activeAgent].length
     const prevLen = msgLengthRef.current[activeAgent]
     msgLengthRef.current[activeAgent] = currentLen
 
     if (isAtBottomRef.current) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+      virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'smooth' })
     } else if (currentLen > prevLen) {
       setHasNew(true)
     }
   }, [messages])
 
   // タブ切り替え時は常に最下部へ
-  // content-visibility: auto により画面外要素のレイアウトが未計算のため
-  // scrollIntoView は効かない。scrollTop=999999 + double RAF + 300ms fallback で対処
   useEffect(() => {
     isAtBottomRef.current = true
     setShowScrollBtn(false)
     setHasNew(false)
     msgLengthRef.current[activeAgent] = messages[activeAgent].length
     requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        const el = messagesRef.current
-        if (el) el.scrollTop = 999999
-      })
+      virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'auto' })
     })
-    setTimeout(() => {
-      const el = messagesRef.current
-      if (el) el.scrollTop = 999999
-    }, 300)
   }, [activeAgent])
 
-  // 画面回転時のスクロール位置保持
+  // 画面回転時：最下部にいた場合はVirtuosoが保持するが念のため追従
   useEffect(() => {
-    const el = messagesRef.current
-    if (!el) return
-    let savedScrollTop = null
-
-    const onOrientationChange = () => {
-      savedScrollTop = isAtBottomRef.current ? null : el.scrollTop
-    }
     const onResize = () => {
       if (isAtBottomRef.current) {
-        bottomRef.current?.scrollIntoView({ behavior: 'instant' })
-      } else if (savedScrollTop !== null) {
-        requestAnimationFrame(() => {
-          el.scrollTop = savedScrollTop
-          savedScrollTop = null
-        })
+        virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'auto' })
       }
     }
-
-    window.addEventListener('orientationchange', onOrientationChange)
     window.addEventListener('resize', onResize)
-    return () => {
-      window.removeEventListener('orientationchange', onOrientationChange)
-      window.removeEventListener('resize', onResize)
-    }
+    return () => window.removeEventListener('resize', onResize)
   }, [])
 
   // 処理中ストリームへの再接続チェック（重複防止つき）
@@ -540,19 +505,7 @@ export default function App() {
         }
         return { ...prev, [agent]: msgs }
       })
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          const el = messagesRef.current
-          if (el) {
-            el.scrollTop = 999999
-            isAtBottomRef.current = true
-          }
-        })
-      })
-      setTimeout(() => {
-        const el = messagesRef.current
-        if (el) el.scrollTop = 999999
-      }, 300)
+      virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'auto' })
     }
   }
 
@@ -590,6 +543,15 @@ export default function App() {
 
   const currentAttachments = attachments[activeAgent]
 
+  // ローディング中かつストリーミングメッセージがない場合は仮エントリを末尾に追加
+  const displayMessages = useMemo(() => {
+    const msgs = messages[activeAgent]
+    if (loading[activeAgent] && !msgs.some(m => m.streaming)) {
+      return [...msgs, { id: '__loading__', role: '__loading__' }]
+    }
+    return msgs
+  }, [messages, loading, activeAgent])
+
   return (
     <div className="app">
       {/* ステータスバー */}
@@ -621,69 +583,83 @@ export default function App() {
 
       {/* メッセージ一覧 */}
       <div className="messages-container">
-        <div className="messages" ref={messagesRef} onScroll={handleScroll}>
-          {messages[activeAgent].map((msg) => (
-            <div key={msg.id} className={`message ${msg.role}`}>
-              {msg.role === 'user' && (msg.imageUrls?.length > 0 || msg.fileNames?.length > 0) ? (
-                <div className="user-block">
-                  {msg.imageUrls?.length > 0 && (
-                    <div className="attach-images">
-                      {msg.imageUrls.map((url, j) => (
-                        <img key={j} src={url} className="msg-image" alt="" />
-                      ))}
-                    </div>
-                  )}
-                  {msg.fileNames?.length > 0 && (
-                    <div className="attach-files">
-                      {msg.fileNames.map((name, j) => (
-                        <span key={j} className="file-chip">📄 {name}</span>
-                      ))}
-                    </div>
-                  )}
-                  {msg.text && (
-                    <span className="bubble">
-                      <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} streaming={msg.streaming} />
-                    </span>
-                  )}
+        <Virtuoso
+          ref={virtuosoRef}
+          className="messages"
+          data={displayMessages}
+          computeItemKey={(_, msg) => msg.id}
+          followOutput="auto"
+          atBottomStateChange={(atBottom) => {
+            isAtBottomRef.current = atBottom
+            setShowScrollBtn(!atBottom)
+            if (atBottom) setHasNew(false)
+          }}
+          atBottomThreshold={30}
+          itemContent={(_, msg) => {
+            if (msg.role === '__loading__') {
+              return (
+                <div className="message agent">
+                  <span className="bubble dim">…</span>
                 </div>
-              ) : msg.role === 'agent' && (msg.tools?.length > 0 || msg.thinking) ? (
-                <div className="agent-block">
-                  {msg.thinking && (
-                    <details className="thinking-block">
-                      <summary>💭 thinking</summary>
-                      <pre className="thinking-text">{msg.thinking}</pre>
-                    </details>
-                  )}
-                  {msg.tools?.length > 0 && (
-                    <div className="tool-log">
-                      {msg.tools.map((t) => (
-                        <div key={t.id} className={`tool-line tool-${t.name.toLowerCase()}`}>
-                          {t.label}
-                        </div>
-                      ))}
-                      {msg.streaming && <div className="tool-line tool-pending">…</div>}
-                    </div>
-                  )}
-                  {msg.text && (
-                    <span className="bubble">
-                      <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} streaming={msg.streaming} />
-                    </span>
-                  )}
-                </div>
-              ) : (
-                <span className="bubble">
-                  <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} streaming={msg.streaming} />
-                </span>
-              )}
-            </div>
-          ))}
-          {loading[activeAgent] && !messages[activeAgent].some(m => m.streaming) && (
-            <div className="message agent">
-              <span className="bubble dim">…</span>
-            </div>
-          )}
-          <div ref={bottomRef} />
-        </div>
+              )
+            }
+            return (
+              <div className={`message ${msg.role}`}>
+                {msg.role === 'user' && (msg.imageUrls?.length > 0 || msg.fileNames?.length > 0) ? (
+                  <div className="user-block">
+                    {msg.imageUrls?.length > 0 && (
+                      <div className="attach-images">
+                        {msg.imageUrls.map((url, j) => (
+                          <img key={j} src={url} className="msg-image" alt="" />
+                        ))}
+                      </div>
+                    )}
+                    {msg.fileNames?.length > 0 && (
+                      <div className="attach-files">
+                        {msg.fileNames.map((name, j) => (
+                          <span key={j} className="file-chip">📄 {name}</span>
+                        ))}
+                      </div>
+                    )}
+                    {msg.text && (
+                      <span className="bubble">
+                        <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} streaming={msg.streaming} />
+                      </span>
+                    )}
+                  </div>
+                ) : msg.role === 'agent' && (msg.tools?.length > 0 || msg.thinking) ? (
+                  <div className="agent-block">
+                    {msg.thinking && (
+                      <details className="thinking-block">
+                        <summary>💭 thinking</summary>
+                        <pre className="thinking-text">{msg.thinking}</pre>
+                      </details>
+                    )}
+                    {msg.tools?.length > 0 && (
+                      <div className="tool-log">
+                        {msg.tools.map((t) => (
+                          <div key={t.id} className={`tool-line tool-${t.name.toLowerCase()}`}>
+                            {t.label}
+                          </div>
+                        ))}
+                        {msg.streaming && <div className="tool-line tool-pending">…</div>}
+                      </div>
+                    )}
+                    {msg.text && (
+                      <span className="bubble">
+                        <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} streaming={msg.streaming} />
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <span className="bubble">
+                    <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} streaming={msg.streaming} />
+                  </span>
+                )}
+              </div>
+            )
+          }}
+        />
 
         {/* ↓ スクロールボタン */}
         {showScrollBtn && (
