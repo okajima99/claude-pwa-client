@@ -101,6 +101,7 @@
 .message {
   display: flex;
   margin-bottom: 6px;
+  content-visibility: auto;
 }
 
 .message.user { justify-content: flex-end; }
