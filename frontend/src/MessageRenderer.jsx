@@ -49,7 +49,10 @@ function remarkFilePaths() {
   }
 }
 
-const MessageRenderer = React.memo(function MessageRenderer({ text, onOpenFile }) {
+const MessageRenderer = React.memo(function MessageRenderer({ text, onOpenFile, streaming }) {
+  if (streaming) {
+    return <span style={{ whiteSpace: 'pre-wrap' }}>{text}</span>
+  }
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkFilePaths]}

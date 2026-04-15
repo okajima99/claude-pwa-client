@@ -546,7 +546,7 @@ export default function App() {
                   )}
                   {msg.text && (
                     <span className="bubble">
-                      <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} />
+                      <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} streaming={msg.streaming} />
                     </span>
                   )}
                 </div>
@@ -570,13 +570,13 @@ export default function App() {
                   )}
                   {msg.text && (
                     <span className="bubble">
-                      <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} />
+                      <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} streaming={msg.streaming} />
                     </span>
                   )}
                 </div>
               ) : (
                 <span className="bubble">
-                  <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} />
+                  <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} streaming={msg.streaming} />
                 </span>
               )}
             </div>
