@@ -9,6 +9,7 @@ const FileTreePanel = lazy(() => import('./FileTreePanel.jsx'))
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 const AGENTS = ['agent_a', 'agent_b']
 const SUPPORTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
+const MAX_MESSAGES = 200
 
 const generateId = () => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID()
@@ -219,7 +220,8 @@ export default function App() {
       // localStorageにはimagesのBlobURLは保存できないので除外し、lz-stringで圧縮
       const toSave = {}
       for (const agent of AGENTS) {
-        toSave[agent] = messages[agent].map(m =>
+        const trimmed = messages[agent].slice(-MAX_MESSAGES)
+        toSave[agent] = trimmed.map(m =>
           m.role === 'user' ? { ...m, imageUrls: undefined } : m
         )
       }
@@ -366,7 +368,7 @@ export default function App() {
 
     setMessages(prev => ({
       ...prev,
-      [agent]: [...prev[agent], { id: generateId(), role: 'user', text, imageUrls, fileNames }],
+      [agent]: [...prev[agent], { id: generateId(), role: 'user', text, imageUrls, fileNames }].slice(-MAX_MESSAGES),
     }))
     setInput(prev => ({ ...prev, [agent]: '' }))
     setAttachments(prev => ({ ...prev, [agent]: [] }))
@@ -375,7 +377,7 @@ export default function App() {
     // 応答の受け皿
     setMessages(prev => ({
       ...prev,
-      [agent]: [...prev[agent], { id: generateId(), role: 'agent', text: '', tools: [], streaming: true }],
+      [agent]: [...prev[agent], { id: generateId(), role: 'agent', text: '', tools: [], streaming: true }].slice(-MAX_MESSAGES),
     }))
 
     const controller = new AbortController()
@@ -475,7 +477,7 @@ export default function App() {
       const msgs = prev[agent]
       const last = msgs[msgs.length - 1]
       if (last?.role === 'agent' && last?.streaming) return prev
-      return { ...prev, [agent]: [...msgs, { id: generateId(), role: 'agent', text: '', tools: [], streaming: true }] }
+      return { ...prev, [agent]: [...msgs, { id: generateId(), role: 'agent', text: '', tools: [], streaming: true }].slice(-MAX_MESSAGES) }
     })
 
     // バッファ初期化
