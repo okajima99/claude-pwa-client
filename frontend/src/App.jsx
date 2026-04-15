@@ -10,6 +10,14 @@ const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 const AGENTS = ['agent_a', 'agent_b']
 const SUPPORTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
 
+const generateId = () => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID()
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16)
+  })
+}
+
 export default function App() {
   const [activeAgent, setActiveAgent] = useState(() => {
     try {
@@ -28,7 +36,7 @@ export default function App() {
         // IDがないメッセージに付与（移行対応）
         const result = {}
         for (const agent of AGENTS) {
-          result[agent] = (parsed[agent] || []).map(m => m.id ? m : { ...m, id: crypto.randomUUID() })
+          result[agent] = (parsed[agent] || []).map(m => m.id ? m : { ...m, id: generateId() })
         }
         return result
       }
@@ -114,7 +122,7 @@ export default function App() {
 
       if (snap.needsNewBubble) {
         return { ...prev, [agent]: [...msgs, {
-          id: crypto.randomUUID(),
+          id: generateId(),
           role: 'agent',
           text: snap.text || '',
           tools: [],
@@ -358,7 +366,7 @@ export default function App() {
 
     setMessages(prev => ({
       ...prev,
-      [agent]: [...prev[agent], { id: crypto.randomUUID(), role: 'user', text, imageUrls, fileNames }],
+      [agent]: [...prev[agent], { id: generateId(), role: 'user', text, imageUrls, fileNames }],
     }))
     setInput(prev => ({ ...prev, [agent]: '' }))
     setAttachments(prev => ({ ...prev, [agent]: [] }))
@@ -367,7 +375,7 @@ export default function App() {
     // 応答の受け皿
     setMessages(prev => ({
       ...prev,
-      [agent]: [...prev[agent], { id: crypto.randomUUID(), role: 'agent', text: '', tools: [], streaming: true }],
+      [agent]: [...prev[agent], { id: generateId(), role: 'agent', text: '', tools: [], streaming: true }],
     }))
 
     const controller = new AbortController()
@@ -429,7 +437,7 @@ export default function App() {
             const msgs = prev[agent]
             const last = msgs[msgs.length - 1]
             if (last?.role === 'agent' && (last.text || last.tools?.length > 0)) return prev
-            return { ...prev, [agent]: [...msgs, { id: crypto.randomUUID(), role: 'error', text: '送信失敗' }] }
+            return { ...prev, [agent]: [...msgs, { id: generateId(), role: 'error', text: '送信失敗' }] }
           })
         }
       } catch {
@@ -437,7 +445,7 @@ export default function App() {
           const msgs = prev[agent]
           const last = msgs[msgs.length - 1]
           if (last?.role === 'agent' && (last.text || last.tools?.length > 0)) return prev
-          return { ...prev, [agent]: [...msgs, { id: crypto.randomUUID(), role: 'error', text: '送信失敗' }] }
+          return { ...prev, [agent]: [...msgs, { id: generateId(), role: 'error', text: '送信失敗' }] }
         })
       }
     } finally {
@@ -467,7 +475,7 @@ export default function App() {
       const msgs = prev[agent]
       const last = msgs[msgs.length - 1]
       if (last?.role === 'agent' && last?.streaming) return prev
-      return { ...prev, [agent]: [...msgs, { id: crypto.randomUUID(), role: 'agent', text: '', tools: [], streaming: true }] }
+      return { ...prev, [agent]: [...msgs, { id: generateId(), role: 'agent', text: '', tools: [], streaming: true }] }
     })
 
     // バッファ初期化
@@ -544,7 +552,7 @@ export default function App() {
     await fetch(`${API_BASE}/session/${activeAgent}/end`, { method: 'POST' })
     setMessages(prev => ({
       ...prev,
-      [activeAgent]: [...prev[activeAgent], { id: crypto.randomUUID(), role: 'system', text: '--- セッション終了 ---' }],
+      [activeAgent]: [...prev[activeAgent], { id: generateId(), role: 'system', text: '--- セッション終了 ---' }],
     }))
   }
 
