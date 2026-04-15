@@ -261,17 +261,19 @@ export default function App() {
   }
 
   // 新着メッセージ時の自動スクロール（タブ切り替えは別のuseEffect）
-  // ストリーミング中の内容更新（アイテム数変化なし）は followOutput が拾えないため明示的にスクロール
-  // ストリーミング中は 'auto'（instant）で発熱を抑える。新規ブロック出現時は followOutput="smooth" が担う
+  // - 新規アイテム追加時: followOutput="smooth" が担う → ここでは触らない（上書きするとinstantになる）
+  // - ストリーミング中の内容更新（アイテム数変化なし）: followOutput は検知できないのでここで 'auto' スクロール
   useEffect(() => {
     const currentLen = messages[activeAgent].length
     const prevLen = msgLengthRef.current[activeAgent]
     msgLengthRef.current[activeAgent] = currentLen
 
-    if (isAtBottomRef.current) {
+    if (currentLen > prevLen) {
+      // 新規追加 → followOutput に任せる。未読通知だけ更新
+      if (!isAtBottomRef.current) setHasNew(true)
+    } else if (isAtBottomRef.current) {
+      // ストリーミング中の内容更新のみ
       virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'auto' })
-    } else if (currentLen > prevLen) {
-      setHasNew(true)
     }
   }, [messages])
 
@@ -433,6 +435,7 @@ export default function App() {
       }
     } catch (e) {
       if (e.name === 'AbortError') return
+      const errText = describeError(e)
       try {
         const gotData = await reconnectStream(agent)
         if (!gotData) {
@@ -440,7 +443,7 @@ export default function App() {
             const msgs = prev[agent]
             const last = msgs[msgs.length - 1]
             if (last?.role === 'agent' && (last.text || last.tools?.length > 0)) return prev
-            return { ...prev, [agent]: [...msgs, { id: generateId(), role: 'error', text: '送信失敗' }] }
+            return { ...prev, [agent]: [...msgs, { id: generateId(), role: 'error', text: errText }] }
           })
         }
       } catch {
@@ -448,7 +451,7 @@ export default function App() {
           const msgs = prev[agent]
           const last = msgs[msgs.length - 1]
           if (last?.role === 'agent' && (last.text || last.tools?.length > 0)) return prev
-          return { ...prev, [agent]: [...msgs, { id: generateId(), role: 'error', text: '送信失敗' }] }
+          return { ...prev, [agent]: [...msgs, { id: generateId(), role: 'error', text: errText }] }
         })
       }
     } finally {
@@ -807,6 +810,14 @@ function formatTool(block) {
       label = `[${name}] ${JSON.stringify(input ?? {})}`
   }
   return { id, name, label }
+}
+
+function describeError(e) {
+  if (!navigator.onLine) return 'オフライン'
+  if (e?.name === 'TimeoutError') return 'タイムアウト'
+  if (e instanceof TypeError) return 'ネットワークエラー（サーバーに接続できません）'
+  if (e?.message) return `エラー: ${e.message}`
+  return '送信失敗'
 }
 
 function pctClass(pct) {
