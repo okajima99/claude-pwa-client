@@ -19,6 +19,13 @@ const generateId = () => {
   })
 }
 
+const fileToBase64 = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader()
+  reader.onload = () => resolve(reader.result)
+  reader.onerror = reject
+  reader.readAsDataURL(file)
+})
+
 export default function App() {
   const [activeAgent, setActiveAgent] = useState(() => {
     try {
@@ -220,10 +227,7 @@ export default function App() {
       // localStorageにはimagesのBlobURLは保存できないので除外し、lz-stringで圧縮
       const toSave = {}
       for (const agent of AGENTS) {
-        const trimmed = messages[agent].slice(-MAX_MESSAGES)
-        toSave[agent] = trimmed.map(m =>
-          m.role === 'user' ? { ...m, imageUrls: undefined } : m
-        )
+        toSave[agent] = messages[agent].slice(-MAX_MESSAGES)
       }
       localStorage.setItem('cpc_messages', compressToUTF16(JSON.stringify(toSave)))
     }, 500)
@@ -372,8 +376,15 @@ export default function App() {
     if (!text && items.length === 0) return
     if (loading[agent]) return
 
-    const imageUrls = items.filter(item => item.url).map(item => item.url)
+    const imageItems = items.filter(item => item.url)
     const fileNames = items.filter(item => !item.url).map(item => item.file.name)
+
+    // 送信前に base64 変換（リロード後も表示できるよう data URL として保存）
+    const imageUrls = await Promise.all(
+      imageItems.map(item => fileToBase64(item.file).catch(() => item.url))
+    )
+    // 変換済みなので BlobURL は解放
+    imageItems.forEach(item => URL.revokeObjectURL(item.url))
 
     setMessages(prev => ({
       ...prev,
