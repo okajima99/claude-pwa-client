@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, lazy, Suspense } from 'react'
+import { flushSync } from 'react-dom'
 import LZString from 'lz-string'
 const { compressToUTF16, decompressFromUTF16 } = LZString
 import './App.css'
@@ -391,24 +392,24 @@ export default function App() {
     // 変換済みなので BlobURL は解放
     imageItems.forEach(item => URL.revokeObjectURL(item.url))
 
-    // 送信時は常に最下部へ（setMessages より前に立てないとuseEffectに間に合わない）
+    // flushSync でDOMを確定させてからスクロール（rAF経由だとDOMコミット前に発火してscrollHeightが古い）
     isAtBottomRef.current = true
-
-    setMessages(prev => ({
-      ...prev,
-      [agent]: [...prev[agent], { id: generateId(), role: 'user', text, imageUrls, fileNames }].slice(-MAX_MESSAGES),
-    }))
-    setInput(prev => ({ ...prev, [agent]: '' }))
-    setAttachments(prev => ({ ...prev, [agent]: [] }))
-    setLoading(prev => ({ ...prev, [agent]: true }))
-
-    // 応答の受け皿
-    setMessages(prev => ({
-      ...prev,
-      [agent]: [...prev[agent], { id: generateId(), role: 'agent', text: '', tools: [], streaming: true }].slice(-MAX_MESSAGES),
-    }))
-
-    requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) })
+    flushSync(() => {
+      setMessages(prev => ({
+        ...prev,
+        [agent]: [...prev[agent], { id: generateId(), role: 'user', text, imageUrls, fileNames }].slice(-MAX_MESSAGES),
+      }))
+      setInput(prev => ({ ...prev, [agent]: '' }))
+      setAttachments(prev => ({ ...prev, [agent]: [] }))
+      setLoading(prev => ({ ...prev, [agent]: true }))
+      // 応答の受け皿
+      setMessages(prev => ({
+        ...prev,
+        [agent]: [...prev[agent], { id: generateId(), role: 'agent', text: '', tools: [], streaming: true }].slice(-MAX_MESSAGES),
+      }))
+    })
+    // flushSync 後はDOMが確定しているので直接スクロール
+    scrollToBottom()
 
     const controller = new AbortController()
     abortControllers.current[agent] = controller
