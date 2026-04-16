@@ -62,6 +62,7 @@ sessions: dict[str, str | None] = _load_sessions()
 @dataclass
 class StreamState:
     buffer: list[str] = field(default_factory=list)
+    buffer_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     task: asyncio.Task | None = None
     complete: bool = True  # 初期状態は「完了済み（次のメッセージを受け付ける）」
 
@@ -321,6 +322,7 @@ async def chat_stream(
 
         # バッファをリセットして新しいバックグラウンドタスク開始
         state.buffer = []
+        state.buffer_id = str(uuid.uuid4())
         state.complete = False
         state.task = asyncio.create_task(
             _run_claude_background(agent, cmd, input_msg, env)
@@ -399,6 +401,7 @@ def get_status(agent: str):
         "seven_day_resets_at": shared_status["seven_day_resets_at"],
         "streaming": not stream_states[agent].complete,
         "buffer_length": len(stream_states[agent].buffer),
+        "buffer_id": stream_states[agent].buffer_id,
     }
 
 

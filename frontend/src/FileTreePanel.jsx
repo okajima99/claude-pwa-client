@@ -3,15 +3,15 @@ import { useState, useEffect } from 'react'
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 const HOME = '~'
 
-export default function FileTreePanel({ onOpenFile, onClose }) {
-  const [currentPath, setCurrentPath] = useState(HOME)
+export default function FileTreePanel({ onOpenFile, onClose, initialPath }) {
+  const [currentPath, setCurrentPath] = useState(initialPath || HOME)
   const [entries, setEntries] = useState([])
   const [history, setHistory] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
   useEffect(() => {
-    loadDir(currentPath)
+    loadDir(initialPath || HOME)
   }, [])
 
   const loadDir = (path) => {

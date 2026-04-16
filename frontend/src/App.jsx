@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, lazy, Suspense } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense, memo } from 'react'
 import { flushSync } from 'react-dom'
 import LZString from 'lz-string'
 const { compressToUTF16, decompressFromUTF16 } = LZString
@@ -68,7 +68,15 @@ export default function App() {
   const [status, setStatus] = useState(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [previewPath, setPreviewPath] = useState(null)
-  const [treeOpen, setTreeOpen] = useState(false)
+  const [treeOpen, setTreeOpen] = useState(null)
+
+  const handleOpenPath = useCallback((path) => {
+    if (path.endsWith('/')) {
+      setTreeOpen(path)
+    } else {
+      setPreviewPath(path)
+    }
+  }, [])
   const [confirmEnd, setConfirmEnd] = useState(false)
   // スクロール制御
   const [showScrollBtn, setShowScrollBtn] = useState(false)
@@ -107,9 +115,30 @@ export default function App() {
       bufferPosRef.current = { agent_a: 0, agent_b: 0 }
     }
   }
+  // バッファ世代ID（エージェントごと）— ズレ検知用
+  const bufferIdRef = useRef(null)
+  if (bufferIdRef.current === null) {
+    try {
+      const saved = localStorage.getItem('cpc_bufid')
+      bufferIdRef.current = saved ? JSON.parse(saved) : { agent_a: null, agent_b: null }
+    } catch {
+      bufferIdRef.current = { agent_a: null, agent_b: null }
+    }
+  }
   const saveBufPos = (agent, pos) => {
     bufferPosRef.current[agent] = pos
     localStorage.setItem('cpc_bufpos', JSON.stringify(bufferPosRef.current))
+  }
+  const saveBufId = (agent, id) => {
+    bufferIdRef.current[agent] = id
+    localStorage.setItem('cpc_bufid', JSON.stringify(bufferIdRef.current))
+  }
+  // ストリーム完了後にサーバーのbuffer_idを同期する
+  const syncBufId = async (agent) => {
+    try {
+      const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json())
+      if (s.buffer_id) saveBufId(agent, s.buffer_id)
+    } catch {}
   }
 
   // rAFバッチング: バッファの最新状態をReact stateに1回だけ反映
@@ -317,6 +346,12 @@ export default function App() {
       if (!forceReconnect && loading[agent]) continue
       try {
         const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json())
+        // バッファ世代が変わっていたら既読位置をリセット
+        if (s.buffer_id && s.buffer_id !== bufferIdRef.current[agent]) {
+          bufferPosRef.current[agent] = 0
+          saveBufId(agent, s.buffer_id)
+          saveBufPos(agent, 0)
+        }
         const bufPos = bufferPosRef.current[agent] ?? 0
         if (s.streaming || bufPos < (s.buffer_length ?? 0)) {
           if (abortControllers.current[agent]) {
@@ -506,6 +541,7 @@ export default function App() {
         return { ...prev, [agent]: msgs }
       })
       abortControllers.current[agent] = null
+      syncBufId(agent)
     }
   }
 
@@ -521,7 +557,12 @@ export default function App() {
     setMessages(prev => {
       const msgs = prev[agent]
       const last = msgs[msgs.length - 1]
-      if (last?.role === 'agent' && last?.streaming) return prev
+      if (last?.role === 'agent') {
+        // 完了済み・streaming中どちらでも既存バブルを再利用（新規追加しない）
+        const updated = [...msgs]
+        updated[updated.length - 1] = { ...last, streaming: true }
+        return { ...prev, [agent]: updated }
+      }
       return { ...prev, [agent]: [...msgs, { id: generateId(), role: 'agent', text: '', tools: [], streaming: true }].slice(-MAX_MESSAGES) }
     })
 
@@ -555,10 +596,11 @@ export default function App() {
         }
       }
 
-      // ストリームが静かに切れた場合の再接続チェック
+      // ストリームが静かに切れた場合の再接続チェック、完了時にbuffer_idを同期
       try {
         const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json()).catch(() => null)
         if (s?.streaming) needsReconnect = true
+        if (s?.buffer_id) saveBufId(agent, s.buffer_id)
       } catch {}
 
       return true
@@ -670,70 +712,9 @@ export default function App() {
             }
           }}
         >
-          {displayMessages.map((msg) => {
-            if (msg.role === '__loading__') {
-              return (
-                <div key={msg.id} className="message agent">
-                  <span className="bubble dim">…</span>
-                </div>
-              )
-            }
-            return (
-              <div key={msg.id} className={`message ${msg.role}`}>
-                {msg.role === 'user' && (msg.imageUrls?.length > 0 || msg.fileNames?.length > 0) ? (
-                  <div className="user-block">
-                    {msg.imageUrls?.length > 0 && (
-                      <div className="attach-images">
-                        {msg.imageUrls.map((url, j) => (
-                          <img key={j} src={url} className="msg-image" alt="" />
-                        ))}
-                      </div>
-                    )}
-                    {msg.fileNames?.length > 0 && (
-                      <div className="attach-files">
-                        {msg.fileNames.map((name, j) => (
-                          <span key={j} className="file-chip">📄 {name}</span>
-                        ))}
-                      </div>
-                    )}
-                    {msg.text && (
-                      <span className="bubble">
-                        <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} streaming={msg.streaming} />
-                      </span>
-                    )}
-                  </div>
-                ) : msg.role === 'agent' && (msg.tools?.length > 0 || msg.thinking) ? (
-                  <div className="agent-block">
-                    {msg.thinking && (
-                      <details className="thinking-block">
-                        <summary>💭 thinking</summary>
-                        <pre className="thinking-text">{msg.thinking}</pre>
-                      </details>
-                    )}
-                    {msg.tools?.length > 0 && (
-                      <div className="tool-log">
-                        {msg.tools.map((t) => (
-                          <div key={t.id} className={`tool-line tool-${t.name.toLowerCase()}`}>
-                            {t.label}
-                          </div>
-                        ))}
-                        {msg.streaming && <div className="tool-line tool-pending">…</div>}
-                      </div>
-                    )}
-                    {msg.text && (
-                      <span className="bubble">
-                        <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} streaming={msg.streaming} />
-                      </span>
-                    )}
-                  </div>
-                ) : (
-                  <span className="bubble">
-                    <MessageRenderer text={msg.text} onOpenFile={setPreviewPath} streaming={msg.streaming} />
-                  </span>
-                )}
-              </div>
-            )
-          })}
+          {displayMessages.map((msg) => (
+            <MessageItem key={msg.id} msg={msg} onOpenFile={handleOpenPath} />
+          ))}
         </div>
 
         {/* ↓ スクロールボタン */}
@@ -784,7 +765,7 @@ export default function App() {
               <button onClick={() => { fileInputRef.current?.click(); setMenuOpen(false) }} className="menu-item">
                 ファイル添付
               </button>
-              <button onClick={() => { setTreeOpen(true); setMenuOpen(false) }} className="menu-item">
+              <button onClick={() => { setTreeOpen('~'); setMenuOpen(false) }} className="menu-item">
                 ファイルツリー
               </button>
               <button onClick={() => { checkAndReconnect(true); requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) }); setMenuOpen(false) }} className="menu-item">
@@ -833,8 +814,9 @@ export default function App() {
         )}
         {treeOpen && (
           <FileTreePanel
-            onOpenFile={setPreviewPath}
-            onClose={() => setTreeOpen(false)}
+            initialPath={treeOpen}
+            onOpenFile={handleOpenPath}
+            onClose={() => setTreeOpen(null)}
           />
         )}
       </Suspense>
@@ -877,6 +859,71 @@ function describeError(e) {
   if (e?.message) return `エラー: ${e.message}`
   return '送信失敗'
 }
+
+const MessageItem = memo(function MessageItem({ msg, onOpenFile }) {
+  if (msg.role === '__loading__') {
+    return (
+      <div className="message agent">
+        <span className="bubble dim">…</span>
+      </div>
+    )
+  }
+  return (
+    <div className={`message ${msg.role}`}>
+      {msg.role === 'user' && (msg.imageUrls?.length > 0 || msg.fileNames?.length > 0) ? (
+        <div className="user-block">
+          {msg.imageUrls?.length > 0 && (
+            <div className="attach-images">
+              {msg.imageUrls.map((url, j) => (
+                <img key={j} src={url} className="msg-image" alt="" />
+              ))}
+            </div>
+          )}
+          {msg.fileNames?.length > 0 && (
+            <div className="attach-files">
+              {msg.fileNames.map((name, j) => (
+                <span key={j} className="file-chip">📄 {name}</span>
+              ))}
+            </div>
+          )}
+          {msg.text && (
+            <span className="bubble">
+              <MessageRenderer text={msg.text} onOpenFile={onOpenFile} streaming={msg.streaming} />
+            </span>
+          )}
+        </div>
+      ) : msg.role === 'agent' && (msg.tools?.length > 0 || msg.thinking) ? (
+        <div className="agent-block">
+          {msg.thinking && (
+            <details className="thinking-block">
+              <summary>💭 thinking</summary>
+              <pre className="thinking-text">{msg.thinking}</pre>
+            </details>
+          )}
+          {msg.tools?.length > 0 && (
+            <div className="tool-log">
+              {msg.tools.map((t) => (
+                <div key={t.id} className={`tool-line tool-${t.name.toLowerCase()}`}>
+                  {t.label}
+                </div>
+              ))}
+              {msg.streaming && <div className="tool-line tool-pending">…</div>}
+            </div>
+          )}
+          {msg.text && (
+            <span className="bubble">
+              <MessageRenderer text={msg.text} onOpenFile={onOpenFile} streaming={msg.streaming} />
+            </span>
+          )}
+        </div>
+      ) : (
+        <span className="bubble">
+          <MessageRenderer text={msg.text} onOpenFile={onOpenFile} streaming={msg.streaming} />
+        </span>
+      )}
+    </div>
+  )
+})
 
 function pctClass(pct) {
   if (pct >= 80) return 'pct red'
