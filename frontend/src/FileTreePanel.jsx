@@ -11,8 +11,9 @@ export default function FileTreePanel({ onOpenFile, onClose, initialPath }) {
   const [error, setError] = useState(null)
 
   useEffect(() => {
+    setHistory([])
     loadDir(initialPath || HOME)
-  }, [])
+  }, [initialPath])
 
   const loadDir = (path) => {
     setLoading(true)

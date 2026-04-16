@@ -589,10 +589,21 @@ button:disabled {
 
 /* ファイルパスリンク */
 .file-link {
-  color: var(--accent);
+  color: #fff;
   text-decoration: underline;
+  text-decoration-color: rgba(255, 255, 255, 0.4);
+  text-underline-offset: 2px;
   cursor: pointer;
   word-break: break-all;
+}
+.message.user .file-link {
+  text-decoration-color: rgba(255, 255, 255, 0.6);
+}
+.bubble a {
+  color: #fff;
+  text-decoration: underline;
+  text-decoration-color: rgba(255, 255, 255, 0.4);
+  text-underline-offset: 2px;
 }
 
 /* モーダル共通オーバーレイ */

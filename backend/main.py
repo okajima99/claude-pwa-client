@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import logging
 import mimetypes
 import os
 import time
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import List
 
 import httpx
+from contextlib import asynccontextmanager
 from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
@@ -17,6 +19,14 @@ from fastapi.staticfiles import StaticFiles
 
 HOME = Path.home()
 UPLOADS_TMP = HOME / "cpc" / "uploads" / "tmp"
+ERROR_LOG_PATH = Path(__file__).parent.parent / "logs" / "backend.error.log"
+
+logging.basicConfig(
+    filename=str(ERROR_LOG_PATH),
+    level=logging.ERROR,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 # --- 設定読み込み ---
 CONFIG_PATH = Path(__file__).parent / "config.json"
@@ -28,8 +38,39 @@ ANTHROPIC_API_BASE = "https://api.anthropic.com"
 
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
+# --- httpx クライアント（アプリレベルで保持してコネクションプーリング） ---
+http_client: httpx.AsyncClient | None = None
+
+
+@asynccontextmanager
+async def lifespan(app):
+    global http_client
+    http_client = httpx.AsyncClient(timeout=300)
+
+    # 起動時クリーンアップ: 24時間以上前のtmpファイルを削除
+    cutoff = time.time() - 24 * 3600
+    if UPLOADS_TMP.exists():
+        for f in UPLOADS_TMP.iterdir():
+            if f.is_file() and f.stat().st_mtime < cutoff:
+                try:
+                    f.unlink(missing_ok=True)
+                except Exception:
+                    pass
+    # エラーログが10MB超えたら空にする
+    if ERROR_LOG_PATH.exists() and ERROR_LOG_PATH.stat().st_size > 10 * 1024 * 1024:
+        try:
+            ERROR_LOG_PATH.write_text("")
+        except Exception:
+            pass
+
+    yield
+
+    await http_client.aclose()
+    http_client = None
+
+
 # --- アプリ初期化 ---
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -88,15 +129,10 @@ agent_status: dict[str, dict] = {
 
 
 def _update_shared_from_headers(headers) -> None:
-    def _get(key):
-        if isinstance(headers, httpx.Headers):
-            return headers.get(key)
-        return headers.get(key)
-
-    five_h = _get("anthropic-ratelimit-unified-5h-utilization")
-    seven_d = _get("anthropic-ratelimit-unified-7d-utilization")
-    five_h_reset = _get("anthropic-ratelimit-unified-5h-resets-at")
-    seven_d_reset = _get("anthropic-ratelimit-unified-7d-resets-at")
+    five_h = headers.get("anthropic-ratelimit-unified-5h-utilization")
+    seven_d = headers.get("anthropic-ratelimit-unified-7d-utilization")
+    five_h_reset = headers.get("anthropic-ratelimit-unified-5h-resets-at")
+    seven_d_reset = headers.get("anthropic-ratelimit-unified-7d-resets-at")
 
     if five_h is not None:
         try:
@@ -124,7 +160,9 @@ def _update_shared_from_headers(headers) -> None:
             pass
 
 
-def _update_agent_from_result(agent: str, result_event: dict, last_assistant_usage: dict = {}) -> None:
+def _update_agent_from_result(agent: str, result_event: dict, last_assistant_usage: dict | None = None) -> None:
+    if last_assistant_usage is None:
+        last_assistant_usage = {}
     model_usage = result_event.get("modelUsage", {})
     if not model_usage:
         return
@@ -255,31 +293,10 @@ async def _run_claude_background(agent: str, cmd: list, input_msg: str, env: dic
 
         await proc.wait()
     except Exception:
-        pass
+        logger.exception("Error in _run_claude_background for agent=%s", agent)
     finally:
         running_procs[agent] = None
         state.complete = True
-
-
-# --- 起動時クリーンアップ ---
-@app.on_event("startup")
-async def startup_cleanup():
-    # 24時間以上前のtmpファイルを削除（再起動時に孤立したファイルを回収）
-    cutoff = time.time() - 24 * 3600
-    if UPLOADS_TMP.exists():
-        for f in UPLOADS_TMP.iterdir():
-            if f.is_file() and f.stat().st_mtime < cutoff:
-                try:
-                    f.unlink(missing_ok=True)
-                except Exception:
-                    pass
-    # エラーログが10MB超えたら空にする
-    log_path = Path(__file__).parent.parent / "logs" / "backend.error.log"
-    if log_path.exists() and log_path.stat().st_size > 10 * 1024 * 1024:
-        try:
-            log_path.write_text("")
-        except Exception:
-            pass
 
 
 # --- エンドポイント ---
@@ -451,13 +468,12 @@ async def anthropic_proxy(path: str, request: Request):
         if k.lower() not in ("host", "content-length")
     }
 
-    async with httpx.AsyncClient(timeout=300) as client:
-        resp = await client.request(
-            method=request.method,
-            url=target_url,
-            headers=headers,
-            content=body,
-        )
+    resp = await http_client.request(
+        method=request.method,
+        url=target_url,
+        headers=headers,
+        content=body,
+    )
 
     _update_shared_from_headers(resp.headers)
 
@@ -475,7 +491,7 @@ async def anthropic_proxy(path: str, request: Request):
 
 
 def _resolve_safe(path_str: str) -> Path:
-    resolved = Path(path_str.replace("~", str(HOME))).resolve()
+    resolved = Path(path_str).expanduser().resolve()
     if not str(resolved).startswith(str(HOME)):
         raise HTTPException(status_code=403, detail="Access denied")
     return resolved

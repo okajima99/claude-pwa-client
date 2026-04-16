@@ -89,6 +89,7 @@ export default function App() {
   const abortControllers = useRef({ agent_a: null, agent_b: null })
   const fileInputRef = useRef(null)
   const reconnectingRef = useRef({ agent_a: false, agent_b: false })
+  const loadingRef = useRef(loading)
   // アンマウント時に未送信添付ファイルのBlobURLを解放するための参照
   const attachmentsRef = useRef(attachments)
   const msgSaveTimer = useRef(null)
@@ -204,6 +205,9 @@ export default function App() {
     flushStreamBuf(agent)
   }
 
+  // reconnect中はバブル分割を抑制するフラグ
+  const replayModeRef = useRef({ agent_a: false, agent_b: false })
+
   // SSEイベントをバッファに積む（sendMessage / reconnectStream 共通）
   const processStreamEvent = (agent, event) => {
     if (event.type !== 'assistant' || !event.message?.content) return
@@ -221,7 +225,8 @@ export default function App() {
       .map(b => formatTool(b))
 
     const buf = streamBufRef.current[agent]
-    const needsNewBubble = currentBubbleHasToolsRef.current[agent] && textContent && newTools.length === 0
+    // reconnect中は既存バブルに積むだけ（分割すると2重表示になる）
+    const needsNewBubble = !replayModeRef.current[agent] && currentBubbleHasToolsRef.current[agent] && textContent && newTools.length === 0
 
     if (needsNewBubble) {
       buf.needsNewBubble = true
@@ -242,6 +247,7 @@ export default function App() {
   }
 
   useEffect(() => { attachmentsRef.current = attachments }, [attachments])
+  useEffect(() => { loadingRef.current = loading }, [loading])
 
   // アンマウント時に未送信BlobURLを解放
   useEffect(() => {
@@ -318,7 +324,7 @@ export default function App() {
       // ストリーミング中の内容更新（アイテム数変化なし）
       scrollToBottom()
     }
-  }, [messages])
+  }, [messages, activeAgent])
 
   // タブ切り替え時は常に最下部へ
   useEffect(() => {
@@ -343,7 +349,7 @@ export default function App() {
   const checkAndReconnect = async (forceReconnect = false) => {
     for (const agent of AGENTS) {
       if (reconnectingRef.current[agent]) continue
-      if (!forceReconnect && loading[agent]) continue
+      if (!forceReconnect && loadingRef.current[agent]) continue
       try {
         const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json())
         // バッファ世代が変わっていたら既読位置をリセット
@@ -381,6 +387,10 @@ export default function App() {
   useEffect(() => {
     const handle = () => {
       if (!document.hidden) {
+        // バックグラウンド中にrAFが止まって未反映のストリームデータがあれば強制反映
+        for (const agent of AGENTS) {
+          cancelAndFlush(agent)
+        }
         checkAndReconnect(true)
         requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) })
       }
@@ -430,19 +440,16 @@ export default function App() {
 
     // flushSync でDOMを確定させてからスクロール（rAF経由だとDOMコミット前に発火してscrollHeightが古い）
     isAtBottomRef.current = true
+    const userMsg = { id: generateId(), role: 'user', text, imageUrls, fileNames }
+    const agentMsg = { id: generateId(), role: 'agent', text: '', tools: [], streaming: true }
     flushSync(() => {
       setMessages(prev => ({
         ...prev,
-        [agent]: [...prev[agent], { id: generateId(), role: 'user', text, imageUrls, fileNames }].slice(-MAX_MESSAGES),
+        [agent]: [...prev[agent], userMsg, agentMsg].slice(-MAX_MESSAGES),
       }))
       setInput(prev => ({ ...prev, [agent]: '' }))
       setAttachments(prev => ({ ...prev, [agent]: [] }))
       setLoading(prev => ({ ...prev, [agent]: true }))
-      // 応答の受け皿
-      setMessages(prev => ({
-        ...prev,
-        [agent]: [...prev[agent], { id: generateId(), role: 'agent', text: '', tools: [], streaming: true }].slice(-MAX_MESSAGES),
-      }))
     })
     // flushSync 後はDOMが確定しているので直接スクロール
     scrollToBottom()
@@ -498,12 +505,17 @@ export default function App() {
         }
       }
 
-      // ストリームが静かに切れた場合（doneだがClaudeはまだ処理中）の再接続
+      // ストリームが静かに切れた場合の再接続（処理中 or 未取得バッファあり）
       try {
         const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json()).catch(() => null)
-        if (s?.streaming) {
-          await reconnectStream(agent)
-          return
+        if (s) {
+          // POSTレスポンスから直接ストリームしたので、localPosは現在バッファの正しい位置。
+          // buffer_idだけ同期し、位置はリセットしない（リセットすると全イベント再送→2重表示）
+          if (s.buffer_id) saveBufId(agent, s.buffer_id)
+          if (s.streaming || localPos < (s.buffer_length ?? 0)) {
+            await reconnectStream(agent)
+            return
+          }
         }
       } catch {}
     } catch (e) {
@@ -529,7 +541,19 @@ export default function App() {
       }
     } finally {
       cancelAndFlush(agent)
-      // reconnectStreamが更新した位置を上書きしないようMathMaxで保護
+      // reconnectStreamが引き継いだ場合、状態を上書きしない（loading/streaming/bufPosの競合防止）
+      if (reconnectingRef.current[agent]) return
+      // フォールバック: post-stream checkが失敗してreconnectできなかった場合、ここで再試行
+      try {
+        const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json()).catch(() => null)
+        if (s) {
+          if (s.buffer_id) saveBufId(agent, s.buffer_id)
+          if (s.streaming || localPos < (s.buffer_length ?? 0)) {
+            await reconnectStream(agent)
+            return
+          }
+        }
+      } catch {}
       bufferPosRef.current[agent] = Math.max(bufferPosRef.current[agent], localPos)
       localStorage.setItem('cpc_bufpos', JSON.stringify(bufferPosRef.current))
       setLoading(prev => ({ ...prev, [agent]: false }))
@@ -566,9 +590,10 @@ export default function App() {
       return { ...prev, [agent]: [...msgs, { id: generateId(), role: 'agent', text: '', tools: [], streaming: true }].slice(-MAX_MESSAGES) }
     })
 
-    // バッファ初期化
+    // バッファ初期化（reconnect中はバブル分割を抑制）
     streamBufRef.current[agent] = { text: null, thinking: null, newTools: [], needsNewBubble: false, dirty: false }
     currentBubbleHasToolsRef.current[agent] = false
+    replayModeRef.current[agent] = true
 
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
@@ -605,6 +630,7 @@ export default function App() {
 
       return true
     } finally {
+      replayModeRef.current[agent] = false
       cancelAndFlush(agent)
       saveBufPos(agent, localPos)
       setLoading(prev => ({ ...prev, [agent]: false }))
