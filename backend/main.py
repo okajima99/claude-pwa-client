@@ -3,6 +3,7 @@ import base64
 import json
 import mimetypes
 import os
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -257,6 +258,27 @@ async def _run_claude_background(agent: str, cmd: list, input_msg: str, env: dic
     finally:
         running_procs[agent] = None
         state.complete = True
+
+
+# --- 起動時クリーンアップ ---
+@app.on_event("startup")
+async def startup_cleanup():
+    # 24時間以上前のtmpファイルを削除（再起動時に孤立したファイルを回収）
+    cutoff = time.time() - 24 * 3600
+    if UPLOADS_TMP.exists():
+        for f in UPLOADS_TMP.iterdir():
+            if f.is_file() and f.stat().st_mtime < cutoff:
+                try:
+                    f.unlink(missing_ok=True)
+                except Exception:
+                    pass
+    # エラーログが10MB超えたら空にする
+    log_path = Path(__file__).parent.parent / "logs" / "backend.error.log"
+    if log_path.exists() and log_path.stat().st_size > 10 * 1024 * 1024:
+        try:
+            log_path.write_text("")
+        except Exception:
+            pass
 
 
 # --- エンドポイント ---
