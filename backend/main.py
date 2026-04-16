@@ -376,6 +376,7 @@ def get_status(agent: str):
         "five_hour_resets_at": shared_status["five_hour_resets_at"],
         "seven_day_resets_at": shared_status["seven_day_resets_at"],
         "streaming": not stream_states[agent].complete,
+        "buffer_length": len(stream_states[agent].buffer),
     }
 
 

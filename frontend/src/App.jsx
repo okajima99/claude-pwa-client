@@ -317,7 +317,8 @@ export default function App() {
       if (!forceReconnect && loading[agent]) continue
       try {
         const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json())
-        if (s.streaming) {
+        const bufPos = bufferPosRef.current[agent] ?? 0
+        if (s.streaming || bufPos < (s.buffer_length ?? 0)) {
           if (abortControllers.current[agent]) {
             abortControllers.current[agent].abort()
             abortControllers.current[agent] = null
