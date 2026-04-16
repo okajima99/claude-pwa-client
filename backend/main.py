@@ -547,6 +547,14 @@ def get_tree(path: str = Query(default="~")):
     return {"path": str(resolved), "entries": entries}
 
 
+@app.get("/agents")
+def list_agents():
+    return [
+        {"id": name, "display_name": cfg.get("display_name", name.upper())}
+        for name, cfg in AGENTS.items()
+    ]
+
+
 # フロントエンド静的ファイル配信（APIルートの後に配置）
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
 if FRONTEND_DIST.exists():

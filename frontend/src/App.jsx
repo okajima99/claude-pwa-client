@@ -66,6 +66,7 @@ export default function App() {
   const [attachments, setAttachments] = useState({ agent_a: [], agent_b: [] })
   const [loading, setLoading] = useState({ agent_a: false, agent_b: false })
   const [status, setStatus] = useState(null)
+  const [displayNames, setDisplayNames] = useState({})
   const [menuOpen, setMenuOpen] = useState(false)
   const [previewPath, setPreviewPath] = useState(null)
   const [treeOpen, setTreeOpen] = useState(null)
@@ -258,6 +259,14 @@ export default function App() {
         }
       }
     }
+  }, [])
+
+  useEffect(() => {
+    fetch(`${API_BASE}/agents`).then(r => r.json()).then(agents => {
+      const map = {}
+      for (const a of agents) map[a.id] = a.display_name
+      setDisplayNames(map)
+    }).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -713,7 +722,7 @@ export default function App() {
             className={`tab ${activeAgent === agent ? 'active' : ''}`}
             onClick={() => { setActiveAgent(agent); localStorage.setItem('cpc_active_agent', agent) }}
           >
-            {agent.toUpperCase()}
+            {displayNames[agent] || agent.toUpperCase()}
           </button>
         ))}
       </div>
