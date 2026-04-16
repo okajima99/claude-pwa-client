@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import List
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -497,6 +497,18 @@ def get_file(path: str = Query(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return {"path": str(resolved), "content": content}
+
+
+@app.put("/file")
+def put_file(path: str = Body(...), content: str = Body(...)):
+    resolved = _resolve_safe(path)
+    if resolved.exists() and not resolved.is_file():
+        raise HTTPException(status_code=400, detail="Not a file")
+    try:
+        resolved.write_text(content, encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True}
 
 
 @app.get("/files/tree")
