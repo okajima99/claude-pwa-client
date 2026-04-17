@@ -232,6 +232,15 @@ export function useChatStream({
       abortControllers.current[agent] = null
     }
 
+    // サーバーが推論中なら先にloading=trueをセット（送信ボタン→停止ボタン化）
+    // これがないと、バッファ空の推論中に「送信」が見えて押せてしまう誤認が出る
+    try {
+      const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json()).catch(() => null)
+      if (s?.streaming) {
+        setLoading(prev => ({ ...prev, [agent]: true }))
+      }
+    } catch {}
+
     // 最後のagentバブルをリセット（replayで再構築するため）
     setMessages(prev => {
       const msgs = [...prev[agent]]
@@ -246,7 +255,15 @@ export function useChatStream({
     saveBufPos(agent, 0)
     reconnectingRef.current[agent] = true
     try {
-      await reconnectStream(agent)
+      const hadData = await reconnectStream(agent)
+      // 204 (データなし)で戻ってきた場合、サーバーが完了していれば loading を解除
+      // 推論中ならloading=trueのまま維持（停止ボタン表示）
+      if (!hadData) {
+        const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json()).catch(() => null)
+        if (!s?.streaming) {
+          setLoading(prev => ({ ...prev, [agent]: false }))
+        }
+      }
     } finally {
       reconnectingRef.current[agent] = false
     }
