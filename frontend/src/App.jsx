@@ -302,18 +302,25 @@ export default function App() {
   }, [input])
 
   const programmaticScrollRef = useRef(false)
+  const scrollEndTimerRef = useRef(null)
 
   const scrollToBottom = (behavior = 'auto') => {
     const el = scrollerDomRef.current
     if (!el) return
     programmaticScrollRef.current = true
+    isAtBottomRef.current = true
+    setHasNew(false)
     if (behavior === 'smooth') {
       el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-      setHasNew(false)
+      // smoothスクロールは数百ms続く。その間にonScrollでisAtBottomRefを書き換えられないよう保持
+      clearTimeout(scrollEndTimerRef.current)
+      scrollEndTimerRef.current = setTimeout(() => {
+        programmaticScrollRef.current = false
+      }, 600)
     } else {
       el.scrollTop = el.scrollHeight
+      requestAnimationFrame(() => { programmaticScrollRef.current = false })
     }
-    requestAnimationFrame(() => { programmaticScrollRef.current = false })
   }
 
   // 新着メッセージ時の自動スクロール（タブ切り替えは別のuseEffect）
@@ -325,12 +332,12 @@ export default function App() {
     if (currentLen > prevLen) {
       // 新規アイテム追加: 最下部にいれば追従、そうでなければ未読通知
       if (isAtBottomRef.current) {
-        requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) })
+        requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom('smooth') }) })
       } else {
         setHasNew(true)
       }
     } else if (isAtBottomRef.current) {
-      // ストリーミング中の内容更新（アイテム数変化なし）
+      // ストリーミング中の内容更新（アイテム数変化なし）: autoで即時追従
       scrollToBottom()
     }
   }, [messages, activeAgent])
@@ -478,7 +485,7 @@ export default function App() {
       setLoading(prev => ({ ...prev, [agent]: true }))
     })
     // flushSync 後はDOMが確定しているので直接スクロール
-    scrollToBottom()
+    scrollToBottom('smooth')
 
     const controller = new AbortController()
     abortControllers.current[agent] = controller
