@@ -42,7 +42,25 @@ export function useChatStorage() {
       for (const agent of AGENTS) {
         toSave[agent] = messages[agent].slice(-MAX_MESSAGES)
       }
-      localStorage.setItem('cpc_messages', compressToUTF16(JSON.stringify(toSave)))
+      // quota 超過時は古い方から10%ずつ削って再試行（画像で膨らんだ時の救済）
+      // 画面のstateは触らず、保存分だけ容量に収める
+      for (let attempt = 0; attempt < 10; attempt++) {
+        try {
+          localStorage.setItem('cpc_messages', compressToUTF16(JSON.stringify(toSave)))
+          return
+        } catch {
+          let reduced = false
+          for (const agent of AGENTS) {
+            const arr = toSave[agent]
+            if (arr.length === 0) continue
+            const cut = Math.max(1, Math.floor(arr.length * 0.1))
+            toSave[agent] = arr.slice(cut)
+            reduced = true
+          }
+          if (!reduced) return
+        }
+      }
+      console.warn('[chat-storage] quota exceeded after retries')
     }, 1000)
   }, [messages])
 
