@@ -205,6 +205,11 @@ export function useChatStream({
           saveBufId(agent, s.buffer_id)
           saveBufPos(agent, 0)
         }
+        // サーバーが推論中なら先にloading=trueをセット（送信ボタン→停止ボタン化）
+        // reconnectStreamが204で早期returnするケースでも誤認を防ぐ
+        if (s.streaming) {
+          setLoading(prev => ({ ...prev, [agent]: true }))
+        }
         const bufPos = bufferPosRef.current[agent] ?? 0
         if (s.streaming || bufPos < (s.buffer_length ?? 0)) {
           if (abortControllers.current[agent]) {
