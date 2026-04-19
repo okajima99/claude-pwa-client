@@ -12,7 +12,7 @@ function normalizeOption(opt) {
 }
 
 function AskUserQuestionBubble({ askUserQuestion, onAnswer }) {
-  const { tool_use_id, questions, answered, selectedAnswer } = askUserQuestion
+  const { tool_use_id, questions, answered, selectedAnswer, lastError } = askUserQuestion
   const q = questions?.[0]
   if (!q) return null
 
@@ -97,6 +97,9 @@ function AskUserQuestionBubble({ askUserQuestion, onAnswer }) {
 
       {answered && selectedAnswer && (
         <div className="ask-answered">回答済: {selectedAnswer}</div>
+      )}
+      {!answered && lastError && (
+        <div className="ask-error">⚠ 送信失敗: {lastError}（もう一度押して再試行）</div>
       )}
     </div>
   )

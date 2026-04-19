@@ -31,54 +31,24 @@ export function useChatStream({
   const rafIdRef = useRef({ agent_a: null, agent_b: null })
   const currentBubbleHasToolsRef = useRef({ agent_a: false, agent_b: false })
 
-  // バッファ消費済み位置（エージェントごと）— localStorageで永続化してスワイプ切り後も復元
-  const bufferPosRef = useRef(null)
-  if (bufferPosRef.current === null) {
-    try {
-      const saved = localStorage.getItem('cpc_bufpos')
-      bufferPosRef.current = saved ? JSON.parse(saved) : { agent_a: 0, agent_b: 0 }
-    } catch {
-      bufferPosRef.current = { agent_a: 0, agent_b: 0 }
-    }
-  }
-  // バッファ世代ID（エージェントごと）— ズレ検知用
-  const bufferIdRef = useRef(null)
-  if (bufferIdRef.current === null) {
-    try {
-      const saved = localStorage.getItem('cpc_bufid')
-      bufferIdRef.current = saved ? JSON.parse(saved) : { agent_a: null, agent_b: null }
-    } catch {
-      bufferIdRef.current = { agent_a: null, agent_b: null }
-    }
-  }
   // reconnect中はバブル分割を抑制するフラグ
   const replayModeRef = useRef({ agent_a: false, agent_b: false })
 
-  const saveBufPos = (agent, pos) => {
-    bufferPosRef.current[agent] = pos
-    localStorage.setItem('cpc_bufpos', JSON.stringify(bufferPosRef.current))
-  }
-  const saveBufId = (agent, id) => {
-    bufferIdRef.current[agent] = id
-    localStorage.setItem('cpc_bufid', JSON.stringify(bufferIdRef.current))
-  }
-  // ストリーム完了後にサーバーのbuffer_idを同期する
-  const syncBufId = async (agent) => {
+  // 旧バッファ位置追跡キーの掃除（T1: from=0 固定移行で不要になった）
+  useEffect(() => {
     try {
-      const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json())
-      if (s.buffer_id) saveBufId(agent, s.buffer_id)
+      localStorage.removeItem('cpc_bufpos')
+      localStorage.removeItem('cpc_bufid')
     } catch {}
-  }
+  }, [])
 
-  // 受信済み位置(localPos)とサーバーバッファを比較し、遅れていればreconnectを開始する
-  // 再接続はfire-and-forget: 呼び出し側は「再接続が走るか」だけ判断し、後続処理を止める
-  // reconnectingRef は即時セットされるので、finally内の二重起動防止も効く
-  const _reconnectIfBehind = async (agent, localPos) => {
+  // サーバーがまだ streaming 中なら reconnect を起動（fire-and-forget）
+  // reconnectingRef は即時セットされるので呼び出し側 finally の二重起動防止も効く
+  const _reconnectIfStreaming = async (agent) => {
     try {
       const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json()).catch(() => null)
       if (!s) return false
-      if (s.buffer_id) saveBufId(agent, s.buffer_id)
-      if (s.streaming || localPos < (s.buffer_length ?? 0)) {
+      if (s.streaming || s.pending_question_tool_id) {
         reconnectingRef.current[agent] = true
         reconnectStream(agent).finally(() => {
           reconnectingRef.current[agent] = false
@@ -281,29 +251,17 @@ export function useChatStream({
   useEffect(() => { loadingRef.current = loading }, [loading])
 
   // 処理中ストリームへの再接続チェック（重複防止つき）
+  // T1: バッファ位置を持たないので「streaming中 or 質問待ち」だけで判定する
   const checkAndReconnect = async (forceReconnect = false) => {
     for (const agent of AGENTS) {
       if (reconnectingRef.current[agent]) continue
       if (!forceReconnect && loadingRef.current[agent]) continue
       try {
         const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json())
-        // バッファ世代が変わっていたら既読位置をリセット
-        if (s.buffer_id && s.buffer_id !== bufferIdRef.current[agent]) {
-          saveBufId(agent, s.buffer_id)
-          saveBufPos(agent, 0)
-        }
-        // サーバーが推論中なら先にloading=trueをセット（送信ボタン→停止ボタン化）
-        // reconnectStreamが204で早期returnするケースでも誤認を防ぐ
         if (s.streaming) {
           setLoading(prev => ({ ...prev, [agent]: true }))
         }
-        // AskUserQuestion 待ち中: bufPos==buffer_length でも UI 復元のため全 buffer を replay
-        // setMessages 側で同 tool_use_id は冪等にスキップされる
-        if (s.pending_question_tool_id) {
-          saveBufPos(agent, 0)
-        }
-        const bufPos = bufferPosRef.current[agent] ?? 0
-        if (s.streaming || s.pending_question_tool_id || bufPos < (s.buffer_length ?? 0)) {
+        if (s.streaming || s.pending_question_tool_id) {
           if (abortControllers.current[agent]) {
             abortControllers.current[agent].abort()
             abortControllers.current[agent] = null
@@ -317,20 +275,17 @@ export function useChatStream({
     }
   }
 
-  // 「最新を取得」ボタン専用: 現バブルをリセットしてサーバーバッファを先頭から再構築する
-  // 「思考中に通信が途切れて見えない」ケースで確実に復旧させるための強制replay
+  // 「最新を取得」ボタン専用: サーバーバッファを先頭から再構築する
+  // T1 移行後は reconnectStream 自身がバブルリセット＋from=0 取得をやるので薄いラッパーになった
   const fetchLatest = async () => {
     const agent = activeAgent
     if (reconnectingRef.current[agent]) return
 
-    // 進行中のfetchがあれば中断
     if (abortControllers.current[agent]) {
       abortControllers.current[agent].abort()
       abortControllers.current[agent] = null
     }
 
-    // サーバーが推論中なら先にloading=trueをセット（送信ボタン→停止ボタン化）
-    // これがないと、バッファ空の推論中に「送信」が見えて押せてしまう誤認が出る
     try {
       const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json()).catch(() => null)
       if (s?.streaming) {
@@ -338,23 +293,9 @@ export function useChatStream({
       }
     } catch {}
 
-    // 最後のagentバブルをリセット（replayで再構築するため）
-    setMessages(prev => {
-      const msgs = [...prev[agent]]
-      const last = msgs[msgs.length - 1]
-      if (last?.role === 'agent') {
-        msgs[msgs.length - 1] = { ...last, text: '', tools: [], thinking: null, streaming: true }
-      }
-      return { ...prev, [agent]: msgs }
-    })
-
-    // バッファ位置を先頭に戻してreconnect
-    saveBufPos(agent, 0)
     reconnectingRef.current[agent] = true
     try {
       const hadData = await reconnectStream(agent)
-      // 204 (データなし)で戻ってきた場合、サーバーが完了していれば loading を解除
-      // 推論中ならloading=trueのまま維持（停止ボタン表示）
       if (!hadData) {
         const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json()).catch(() => null)
         if (!s?.streaming) {
@@ -432,9 +373,6 @@ export function useChatStream({
     streamBufRef.current[agent] = { text: null, thinking: null, newTools: [], needsNewBubble: false, dirty: false }
     currentBubbleHasToolsRef.current[agent] = false
 
-    saveBufPos(agent, 0)
-    let localPos = 0
-
     try {
       const formData = new FormData()
       formData.append('message', text)
@@ -467,22 +405,19 @@ export function useChatStream({
           const data = line.slice(6).trim()
           if (!data) continue
 
-          localPos++
-          bufferPosRef.current[agent] = localPos
-
           try {
             processStreamEvent(agent, JSON.parse(data))
           } catch {}
         }
       }
 
-      // SSEが静かに切れた場合の復旧: サーバーにまだデータが残っていれば追いかける
-      if (await _reconnectIfBehind(agent, localPos)) return
+      // SSEが静かに切れた場合の復旧: サーバーがまだ streaming 中なら追いかける
+      if (await _reconnectIfStreaming(agent)) return
     } catch (e) {
       if (e.name === 'AbortError') return
       const errText = describeError(e)
       // 通信失敗時: reconnectで取り戻せれば続行、ダメならエラー表示
-      const recovered = await _reconnectIfBehind(agent, localPos)
+      const recovered = await _reconnectIfStreaming(agent)
       if (!recovered) {
         setMessages(prev => {
           const msgs = prev[agent]
@@ -496,9 +431,8 @@ export function useChatStream({
       // reconnectStreamが走っている間は状態を触らない（そちらが最終化する）
       if (reconnectingRef.current[agent]) return
       // post-stream checkが例外で落ちた場合の最終フォールバック
-      if (await _reconnectIfBehind(agent, localPos)) return
+      if (await _reconnectIfStreaming(agent)) return
 
-      saveBufPos(agent, Math.max(bufferPosRef.current[agent], localPos))
       setLoading(prev => ({ ...prev, [agent]: false }))
       setMessages(prev => {
         const msgs = [...prev[agent]]
@@ -508,14 +442,14 @@ export function useChatStream({
         return { ...prev, [agent]: msgs }
       })
       abortControllers.current[agent] = null
-      syncBufId(agent)
     }
   }
 
-  // reconnect: 204 なら false、データあり(ストリーミング完了)なら true を返す
+  // reconnect: T1 移行で常に from=0 で全 buffer 再生する
+  // - 204 なら false、データあり(ストリーミング完了)なら true を返す
+  // - 既存の最後の agent バブルは中身をリセット → 受信イベントで再構築（重複防止）
   const reconnectStream = async (agent) => {
-    const fromPos = bufferPosRef.current[agent] ?? 0
-    const res = await fetch(`${API_BASE}/chat/${agent}/reconnect?from=${fromPos}`)
+    const res = await fetch(`${API_BASE}/chat/${agent}/reconnect?from=0`)
     if (res.status === 204) return false
     if (!res.ok) return false
 
@@ -525,9 +459,9 @@ export function useChatStream({
       const msgs = prev[agent]
       const last = msgs[msgs.length - 1]
       if (last?.role === 'agent') {
-        // 完了済み・streaming中どちらでも既存バブルを再利用（新規追加しない）
+        // 既存の最後 agent バブルを空にして再構築（from=0 全 replay と整合させる）
         const updated = [...msgs]
-        updated[updated.length - 1] = { ...last, streaming: true }
+        updated[updated.length - 1] = { ...last, text: '', tools: [], thinking: null, meta: undefined, streaming: true }
         return { ...prev, [agent]: updated }
       }
       return { ...prev, [agent]: [...msgs, { id: generateId(), role: 'agent', text: '', tools: [], streaming: true }].slice(-MAX_MESSAGES) }
@@ -541,7 +475,6 @@ export function useChatStream({
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
     let buf = ''
-    let localPos = fromPos
     let needsReconnect = false
     try {
       while (true) {
@@ -555,27 +488,22 @@ export function useChatStream({
           const data = line.slice(6).trim()
           if (!data) continue
 
-          localPos++
-          bufferPosRef.current[agent] = localPos
-
           try {
             processStreamEvent(agent, JSON.parse(data))
           } catch {}
         }
       }
 
-      // ストリームが静かに切れた場合の再接続チェック、完了時にbuffer_idを同期
+      // ストリームが静かに切れた場合の再接続チェック
       try {
         const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json()).catch(() => null)
         if (s?.streaming) needsReconnect = true
-        if (s?.buffer_id) saveBufId(agent, s.buffer_id)
       } catch {}
 
       return true
     } finally {
       replayModeRef.current[agent] = false
       cancelAndFlush(agent)
-      saveBufPos(agent, localPos)
       setLoading(prev => ({ ...prev, [agent]: false }))
       setMessages(prev => {
         const msgs = [...prev[agent]]
@@ -590,11 +518,11 @@ export function useChatStream({
   }
 
   const sendAnswer = async (agent, tool_use_id, answer) => {
-    // UI 側を先にロック（楽観更新）
+    // UI 側を先にロック（楽観更新）。前回失敗のエラー表示があればクリア
     setMessages(prev => {
       const msgs = prev[agent].map(m => {
         if (m.askUserQuestion?.tool_use_id !== tool_use_id) return m
-        return { ...m, askUserQuestion: { ...m.askUserQuestion, answered: true, selectedAnswer: answer } }
+        return { ...m, askUserQuestion: { ...m.askUserQuestion, answered: true, selectedAnswer: answer, lastError: null } }
       })
       return { ...prev, [agent]: msgs }
     })
@@ -606,11 +534,12 @@ export function useChatStream({
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
     } catch (e) {
-      // 失敗したらロックを解除して再試行できるようにする
+      // 失敗したらロックを解除し、エラー文言を埋めて再試行可能にする
+      const errText = describeError(e)
       setMessages(prev => {
         const msgs = prev[agent].map(m => {
           if (m.askUserQuestion?.tool_use_id !== tool_use_id) return m
-          return { ...m, askUserQuestion: { ...m.askUserQuestion, answered: false, selectedAnswer: null } }
+          return { ...m, askUserQuestion: { ...m.askUserQuestion, answered: false, selectedAnswer: null, lastError: errText } }
         })
         return { ...prev, [agent]: msgs }
       })

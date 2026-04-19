@@ -667,6 +667,14 @@ button:disabled {
   color: var(--text-dim);
   font-style: italic;
 }
+.ask-error {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(231, 76, 60, 0.15);
+  color: #e74c3c;
+  font-size: 12px;
+}
 
 /* 停止理由チップ（max_tokens / refusal / pause_turn 等） */
 .stop-chip {
