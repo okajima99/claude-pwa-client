@@ -1,11 +1,30 @@
 import { memo } from 'react'
 import MessageRenderer from '../MessageRenderer.jsx'
 import AskUserQuestionBubble from './AskUserQuestionBubble.jsx'
-import { formatToolResultContent } from '../utils/format.js'
+import { formatToolResultContent, formatCost, formatDuration, formatModelName, formatTokens } from '../utils/format.js'
 
 const RESULT_PREVIEW_CHARS = 800
 
-const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer }) {
+function MetaLine({ meta, streaming, apiKeySource }) {
+  if (!meta || streaming) return null
+  const parts = []
+  // cost は API キー経由（"none" でない）のときだけ表示。OAuth/subscription 経路では参考値で誤解を招くため非表示
+  if (apiKeySource && apiKeySource !== 'none') {
+    const cost = formatCost(meta.cost_usd)
+    if (cost) parts.push(cost)
+  }
+  const tokens = formatTokens(meta.usage)
+  if (tokens) parts.push(tokens)
+  if (meta.num_turns) parts.push(`${meta.num_turns} turns`)
+  const dur = formatDuration(meta.duration_ms)
+  if (dur) parts.push(dur)
+  const model = formatModelName(meta.modelUsage)
+  if (model) parts.push(model)
+  if (parts.length === 0) return null
+  return <div className="bubble-meta">{parts.join(' · ')}</div>
+}
+
+const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKeySource }) {
   if (msg.role === '__loading__') {
     return (
       <div className="message agent">
@@ -80,6 +99,16 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer }) {
           {msg.askUserQuestion && (
             <AskUserQuestionBubble askUserQuestion={msg.askUserQuestion} onAnswer={onAnswer} />
           )}
+          <MetaLine meta={msg.meta} streaming={msg.streaming} apiKeySource={apiKeySource} />
+        </div>
+      ) : msg.role === 'agent' ? (
+        <div className="agent-block">
+          {msg.text && (
+            <span className="bubble">
+              <MessageRenderer text={msg.text} onOpenFile={onOpenFile} streaming={msg.streaming} />
+            </span>
+          )}
+          <MetaLine meta={msg.meta} streaming={msg.streaming} apiKeySource={apiKeySource} />
         </div>
       ) : (
         <span className="bubble">

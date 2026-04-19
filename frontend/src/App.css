@@ -637,6 +637,16 @@ button:disabled {
   font-style: italic;
 }
 
+/* バブル末尾のメタ情報（cost / turns / duration / model） */
+.bubble-meta {
+  font-size: 10px;
+  color: var(--text-dim);
+  opacity: 0.55;
+  margin-top: 2px;
+  font-family: 'Menlo', 'Monaco', monospace;
+  letter-spacing: 0.02em;
+}
+
 /* thinking ブロック */
 .thinking-block {
   font-size: 11px;

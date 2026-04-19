@@ -13,6 +13,8 @@ export function useChatStream({
   scrollToBottom, isAtBottomRef,
 }) {
   const [loading, setLoading] = useState({ agent_a: false, agent_b: false })
+  // SDK init イベントから取得する API キー由来。"none" なら OAuth/サブスクリプション経路（実課金ゼロ）
+  const [apiKeySource, setApiKeySource] = useState({ agent_a: null, agent_b: null })
 
   const abortControllers = useRef({ agent_a: null, agent_b: null })
   const reconnectingRef = useRef({ agent_a: false, agent_b: false })
@@ -152,6 +154,33 @@ export function useChatStream({
 
   // SSEイベントをバッファに積む（sendMessage / reconnectStream 共通）
   const processStreamEvent = (agent, event) => {
+    // system init: apiKeySource を取得（"none" なら subscription/OAuth 経路で課金ゼロ）
+    if (event.type === 'system' && event.subtype === 'init') {
+      if (event.apiKeySource) {
+        setApiKeySource(prev => ({ ...prev, [agent]: event.apiKeySource }))
+      }
+      return
+    }
+
+    // result: 直近の agent バブルに meta（コスト・所要時間・ターン数・モデル・トークン）を埋め込む
+    if (event.type === 'result') {
+      const meta = {
+        cost_usd: typeof event.total_cost_usd === 'number' ? event.total_cost_usd : null,
+        num_turns: typeof event.num_turns === 'number' ? event.num_turns : null,
+        duration_ms: typeof event.duration_ms === 'number' ? event.duration_ms : null,
+        modelUsage: event.modelUsage || null,
+        usage: event.usage || null,
+      }
+      setMessages(prev => {
+        const msgs = [...prev[agent]]
+        const last = msgs[msgs.length - 1]
+        if (last?.role !== 'agent') return prev
+        msgs[msgs.length - 1] = { ...last, meta }
+        return { ...prev, [agent]: msgs }
+      })
+      return
+    }
+
     // AskUserQuestion: 直近の agent バブルに askUserQuestion を埋め込む（既存バブルがなければ新規）
     if (event.type === 'ask_user_question') {
       const tool_use_id = event.tool_use_id
@@ -608,6 +637,7 @@ export function useChatStream({
 
   return {
     loading,
+    apiKeySource,
     sendMessage,
     sendAnswer,
     stopMessage,

@@ -33,7 +33,7 @@ export default function App() {
     scrollToBottom,
     onScroll,
   } = useAutoScroll({ messages, activeAgent })
-  const { loading, sendMessage, sendAnswer, stopMessage, fetchLatest, endSession } = useChatStream({
+  const { loading, apiKeySource, sendMessage, sendAnswer, stopMessage, fetchLatest, endSession } = useChatStream({
     activeAgent,
     setMessages,
     input, setInput,
@@ -132,7 +132,13 @@ export default function App() {
           onScroll={onScroll}
         >
           {displayMessages.map((msg) => (
-            <MessageItem key={msg.id} msg={msg} onOpenFile={handleOpenPath} onAnswer={handleAnswer} />
+            <MessageItem
+              key={msg.id}
+              msg={msg}
+              onOpenFile={handleOpenPath}
+              onAnswer={handleAnswer}
+              apiKeySource={apiKeySource[activeAgent]}
+            />
           ))}
         </div>
 
