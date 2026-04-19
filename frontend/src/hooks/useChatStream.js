@@ -152,6 +152,35 @@ export function useChatStream({
 
   // SSEイベントをバッファに積む（sendMessage / reconnectStream 共通）
   const processStreamEvent = (agent, event) => {
+    // user イベントの tool_result を既存 tool に紐付ける
+    // サブエージェント内部の tool_result は表示しない
+    if (event.type === 'user' && event.message?.content && !event.parent_tool_use_id) {
+      const results = Array.isArray(event.message.content)
+        ? event.message.content.filter(b => b?.type === 'tool_result')
+        : []
+      if (results.length === 0) return
+      // 直近のバブルに含まれる tool に result を埋め込む（過去 walk）
+      setMessages(prev => {
+        const msgs = prev[agent]
+        let mutated = false
+        const updated = msgs.map(m => {
+          if (m.role !== 'agent' || !m.tools?.length) return m
+          let toolMutated = false
+          const newTools = m.tools.map(t => {
+            const r = results.find(x => x.tool_use_id === t.id)
+            if (!r) return t
+            toolMutated = true
+            return { ...t, result: { content: r.content, is_error: !!r.is_error } }
+          })
+          if (!toolMutated) return m
+          mutated = true
+          return { ...m, tools: newTools }
+        })
+        return mutated ? { ...prev, [agent]: updated } : prev
+      })
+      return
+    }
+
     if (event.type !== 'assistant' || !event.message?.content) return
     // サブエージェント内部のイベントはバブル内に表示しない（ActivityBar の subagent チップで状態表示）
     if (event.parent_tool_use_id) return

@@ -452,6 +452,54 @@ button:disabled {
 .tool-bash { color: var(--green); }
 .tool-pending { opacity: 0.4; }
 
+/* tool 実行結果（折りたたみ） */
+.tool-block {
+  display: flex;
+  flex-direction: column;
+}
+
+.tool-result {
+  margin: 2px 0 4px 12px;
+  font-size: 11px;
+  font-family: 'Menlo', 'Monaco', monospace;
+}
+
+.tool-result summary {
+  cursor: pointer;
+  user-select: none;
+  opacity: 0.55;
+  padding: 1px 0;
+}
+
+.tool-result summary:hover {
+  opacity: 0.85;
+}
+
+.tool-result-text {
+  margin: 4px 0 0 0;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border-left: 2px solid var(--border);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.tool-result.is-error summary {
+  color: #ff5f57;
+  opacity: 0.9;
+}
+
+.tool-result.is-error .tool-result-text {
+  background: rgba(255, 95, 87, 0.08);
+  border-left-color: #ff5f57;
+  color: #ffb3ad;
+}
+
 /* thinking ブロック */
 .thinking-block {
   font-size: 11px;

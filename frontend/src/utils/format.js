@@ -26,6 +26,21 @@ export function formatTool(block) {
   return { id, name, label }
 }
 
+export function formatToolResultContent(content) {
+  if (content == null) return ''
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .map(b => {
+        if (b?.type === 'text') return b.text ?? ''
+        if (b?.type === 'image') return '[画像]'
+        return JSON.stringify(b)
+      })
+      .join('\n')
+  }
+  return JSON.stringify(content)
+}
+
 export function describeError(e) {
   if (!navigator.onLine) return 'オフライン'
   if (e?.name === 'TimeoutError') return 'タイムアウト'

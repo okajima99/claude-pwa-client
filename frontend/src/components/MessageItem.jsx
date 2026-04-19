@@ -1,5 +1,8 @@
 import { memo } from 'react'
 import MessageRenderer from '../MessageRenderer.jsx'
+import { formatToolResultContent } from '../utils/format.js'
+
+const RESULT_PREVIEW_CHARS = 800
 
 const MessageItem = memo(function MessageItem({ msg, onOpenFile }) {
   if (msg.role === '__loading__') {
@@ -43,11 +46,28 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile }) {
           )}
           {msg.tools?.length > 0 && (
             <div className="tool-log">
-              {msg.tools.map((t) => (
-                <div key={t.id} className={`tool-line tool-${t.name.toLowerCase()}`}>
-                  {t.label}
-                </div>
-              ))}
+              {msg.tools.map((t) => {
+                const resultText = t.result ? formatToolResultContent(t.result.content) : null
+                const truncated = resultText && resultText.length > RESULT_PREVIEW_CHARS
+                return (
+                  <div key={t.id} className="tool-block">
+                    <div className={`tool-line tool-${t.name.toLowerCase()}`}>
+                      {t.label}
+                    </div>
+                    {t.result && (
+                      <details className={`tool-result ${t.result.is_error ? 'is-error' : ''}`}>
+                        <summary>
+                          {t.result.is_error ? '⚠ tool error' : '結果'}
+                          {resultText ? ` · ${resultText.length}文字` : ''}
+                        </summary>
+                        <pre className="tool-result-text">
+                          {truncated ? resultText.slice(0, RESULT_PREVIEW_CHARS) + '\n…（省略）' : resultText}
+                        </pre>
+                      </details>
+                    )}
+                  </div>
+                )
+              })}
               {msg.streaming && <div className="tool-line tool-pending">…</div>}
             </div>
           )}
