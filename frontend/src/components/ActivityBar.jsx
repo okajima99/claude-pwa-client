@@ -1,11 +1,26 @@
-import { memo } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
+
+// 全完了 TODO を画面から消すまでの猶予（進行中は残し続ける）
+const TODOS_HIDE_AFTER_DONE_MS = 5_000
 
 function ActivityBar({ status }) {
+  const todos = status?.todos
+  const hasTodosRaw = Array.isArray(todos) && todos.length > 0
+  const allDone = hasTodosRaw && todos.every(t => t.status === 'completed')
+
+  // 全完了に遷移してから N 秒後に非表示。進行中の TODO は放置されても消さない
+  const [hideDone, setHideDone] = useState(false)
+  useEffect(() => {
+    if (!allDone) { setHideDone(false); return }
+    const id = setTimeout(() => setHideDone(true), TODOS_HIDE_AFTER_DONE_MS)
+    return () => clearTimeout(id)
+  }, [allDone])
+
   if (!status) return null
 
-  const { plan_mode, subagent, todos } = status
+  const { plan_mode, subagent } = status
   const hasLine = plan_mode || subagent
-  const hasTodos = Array.isArray(todos) && todos.length > 0
+  const hasTodos = hasTodosRaw && !(allDone && hideDone)
   if (!hasLine && !hasTodos) return null
 
   const done = hasTodos ? todos.filter(t => t.status === 'completed').length : 0

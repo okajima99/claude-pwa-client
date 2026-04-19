@@ -251,9 +251,9 @@ export function useChatStream({
       .filter(b => b.type === 'thinking')
       .map(b => b.thinking)
       .join('\n')
-    // Agent（サブエージェント）は ActivityBar、AskUserQuestion は専用UI(P1)で描画するため tool-log から除外
+    // Agent（サブエージェント）/AskUserQuestion/TodoWrite は ActivityBar or 専用UIで描画するため tool-log から除外
     const newTools = event.message.content
-      .filter(b => b.type === 'tool_use' && b.name !== 'Agent' && b.name !== 'AskUserQuestion')
+      .filter(b => b.type === 'tool_use' && b.name !== 'Agent' && b.name !== 'AskUserQuestion' && b.name !== 'TodoWrite')
       .map(b => formatTool(b))
 
     const buf = streamBufRef.current[agent]
