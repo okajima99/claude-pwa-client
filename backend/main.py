@@ -823,5 +823,31 @@ def list_agents():
 
 
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
+
+
+class CacheControlledStaticFiles(StaticFiles):
+    """index.html / manifest.json は no-cache、ハッシュ付き assets は immutable で長期キャッシュ。
+
+    iOS Safari (PWA) はデフォルトで Cache-Control 無しレスポンスを長時間キャッシュするため、
+    index.html が古いままになり Vite の新しいハッシュ付き assets ファイルを参照できなくなる。
+    エントリポイント (= index.html / manifest.json) だけ毎回鮮度確認させ、
+    /assets/ 配下はファイル名にハッシュが入っているので永久キャッシュして問題ない。
+    """
+
+    NO_CACHE_PATHS = {"index.html", "manifest.json"}
+    IMMUTABLE_PREFIX = "assets/"
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        # path はマウントポイント以降の相対パス。ルート ("/") の場合は "." が来るので
+        # html=True で展開された後の実ファイル名で判定するため、後段でも振り分ける
+        normalized = path.lstrip("/")
+        if normalized in self.NO_CACHE_PATHS or normalized in ("", "."):
+            response.headers["Cache-Control"] = "no-cache"
+        elif normalized.startswith(self.IMMUTABLE_PREFIX):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
 if FRONTEND_DIST.exists():
-    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")
+    app.mount("/", CacheControlledStaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")

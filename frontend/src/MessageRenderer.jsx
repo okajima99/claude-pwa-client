@@ -49,10 +49,9 @@ function remarkFilePaths() {
   }
 }
 
-const MessageRenderer = React.memo(function MessageRenderer({ text, onOpenFile, streaming }) {
-  if (streaming) {
-    return <span style={{ whiteSpace: 'pre-wrap' }}>{text}</span>
-  }
+const MessageRenderer = React.memo(function MessageRenderer({ text, onOpenFile }) {
+  // streaming 中も ReactMarkdown を通す。不完全な Markdown (閉じてない表/コードブロック等) でも
+  // react-markdown は例外を吐かず、暫定の見た目で描画する。途中の表やコードが視覚的に見えないよりマシ。
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkFilePaths]}

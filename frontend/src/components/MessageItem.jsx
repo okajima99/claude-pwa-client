@@ -34,7 +34,7 @@ function MetaLine({ meta, streaming, apiKeySource }) {
   }
   const tokens = formatTokens(meta.usage)
   if (tokens) parts.push(tokens)
-  if (meta.num_turns) parts.push(`${meta.num_turns} turns`)
+  // turns は意味が伝わりにくいので非表示
   const dur = formatDuration(meta.duration_ms)
   if (dur) parts.push(dur)
   const model = formatModelName(meta.modelUsage)
@@ -48,6 +48,22 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKe
     return (
       <div className="message agent">
         <span className="bubble dim">…</span>
+      </div>
+    )
+  }
+  // streaming 中で中身がまだゼロ (送信直後〜最初のチャンク到着まで) は「推論中…」を出して
+  // 沈黙を埋める。最初のチャンクが届いた瞬間にこの分岐から抜けて通常描画へ移行する。
+  if (
+    msg.role === 'agent' &&
+    msg.streaming &&
+    !msg.text &&
+    !msg.thinking &&
+    !msg.askUserQuestion &&
+    !(msg.tools && msg.tools.length > 0)
+  ) {
+    return (
+      <div className="message agent">
+        <span className="bubble dim">推論中…</span>
       </div>
     )
   }

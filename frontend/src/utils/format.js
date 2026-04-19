@@ -66,13 +66,12 @@ export function formatModelName(modelUsage) {
   if (!modelUsage || typeof modelUsage !== 'object') return null
   const key = Object.keys(modelUsage)[0]
   if (!key) return null
-  // claude-opus-4-5-20250929 → Opus 4.5 のように整形（_format_model_name 同等）
+  // claude-opus-4-5-... → Opus / claude-sonnet-4-7-... → Sonnet のようにモデル系統名のみ
+  // (バージョンまで出すと iPhone で折り返すため省略)
   const stripped = key.replace(/^claude-/, '')
   const parts = stripped.split('-')
-  if (parts.length >= 3) {
-    const name = parts[0].charAt(0).toUpperCase() + parts[0].slice(1)
-    const version = `${parts[1]}.${parts[2]}`
-    return `${name} ${version}`
+  if (parts.length >= 1 && parts[0]) {
+    return parts[0].charAt(0).toUpperCase() + parts[0].slice(1)
   }
   return key
 }
