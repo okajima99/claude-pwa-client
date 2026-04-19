@@ -637,6 +637,35 @@ button:disabled {
   font-style: italic;
 }
 
+/* 停止理由チップ（max_tokens / refusal / pause_turn 等） */
+.stop-chip {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  margin-top: 4px;
+  align-self: flex-start;
+  font-family: 'Menlo', 'Monaco', monospace;
+}
+
+.stop-chip.warn {
+  background: rgba(255, 200, 0, 0.1);
+  border: 1px solid rgba(255, 200, 0, 0.5);
+  color: #ffcc55;
+}
+
+.stop-chip.danger {
+  background: rgba(255, 95, 87, 0.1);
+  border: 1px solid rgba(255, 95, 87, 0.5);
+  color: #ff8a82;
+}
+
+.stop-chip.info {
+  background: rgba(120, 170, 255, 0.1);
+  border: 1px solid rgba(120, 170, 255, 0.5);
+  color: #9ab8ff;
+}
+
 /* バブル末尾のメタ情報（cost / turns / duration / model） */
 .bubble-meta {
   font-size: 10px;

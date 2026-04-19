@@ -5,6 +5,25 @@ import { formatToolResultContent, formatCost, formatDuration, formatModelName, f
 
 const RESULT_PREVIEW_CHARS = 800
 
+// 通常完了 (end_turn / tool_use) 以外の停止理由をチップで強調表示
+const STOP_REASON_LABELS = {
+  max_tokens: { label: '⚠ トークン上限で停止', cls: 'warn' },
+  refusal: { label: '🚫 拒否されました', cls: 'danger' },
+  pause_turn: { label: '⏸ 一時停止', cls: 'info' },
+  model_context_window_exceeded: { label: '⚠ コンテキスト窓超過', cls: 'warn' },
+}
+
+function StopReasonChip({ meta, streaming }) {
+  if (!meta || streaming) return null
+  if (meta.is_error) {
+    return <div className="stop-chip danger">⚠ エラーで停止{meta.stop_reason ? ` (${meta.stop_reason})` : ''}</div>
+  }
+  if (!meta.stop_reason || meta.stop_reason === 'end_turn' || meta.stop_reason === 'tool_use') return null
+  const def = STOP_REASON_LABELS[meta.stop_reason]
+  if (!def) return <div className="stop-chip info">⚠ {meta.stop_reason}</div>
+  return <div className={`stop-chip ${def.cls}`}>{def.label}</div>
+}
+
 function MetaLine({ meta, streaming, apiKeySource }) {
   if (!meta || streaming) return null
   const parts = []
@@ -99,6 +118,7 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKe
           {msg.askUserQuestion && (
             <AskUserQuestionBubble askUserQuestion={msg.askUserQuestion} onAnswer={onAnswer} />
           )}
+          <StopReasonChip meta={msg.meta} streaming={msg.streaming} />
           <MetaLine meta={msg.meta} streaming={msg.streaming} apiKeySource={apiKeySource} />
         </div>
       ) : msg.role === 'agent' ? (
@@ -108,6 +128,7 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKe
               <MessageRenderer text={msg.text} onOpenFile={onOpenFile} streaming={msg.streaming} />
             </span>
           )}
+          <StopReasonChip meta={msg.meta} streaming={msg.streaming} />
           <MetaLine meta={msg.meta} streaming={msg.streaming} apiKeySource={apiKeySource} />
         </div>
       ) : (

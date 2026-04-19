@@ -162,7 +162,7 @@ export function useChatStream({
       return
     }
 
-    // result: 直近の agent バブルに meta（コスト・所要時間・ターン数・モデル・トークン）を埋め込む
+    // result: 直近の agent バブルに meta（コスト・所要時間・ターン数・モデル・トークン・stop_reason）を埋め込む
     if (event.type === 'result') {
       const meta = {
         cost_usd: typeof event.total_cost_usd === 'number' ? event.total_cost_usd : null,
@@ -170,6 +170,8 @@ export function useChatStream({
         duration_ms: typeof event.duration_ms === 'number' ? event.duration_ms : null,
         modelUsage: event.modelUsage || null,
         usage: event.usage || null,
+        stop_reason: typeof event.stop_reason === 'string' ? event.stop_reason : null,
+        is_error: !!event.is_error,
       }
       setMessages(prev => {
         const msgs = [...prev[agent]]
