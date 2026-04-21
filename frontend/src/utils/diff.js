@@ -12,6 +12,8 @@ function splitLines(s) {
   return lines
 }
 
+// LCS (Longest Common Subsequence) の長さテーブルを作る。
+// dp[i][j] = a[0..i) と b[0..j) の共通部分列長。後で ops を逆算するのに使う。
 function lcsTable(a, b) {
   const n = a.length, m = b.length
   // メモリ節約のため Uint32Array を使う（最大 2.1B まで）
