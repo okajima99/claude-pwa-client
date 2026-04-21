@@ -1,5 +1,6 @@
 const SHORT_LABEL_MAX = 60
 
+// 折りたたみサマリ用の文字列切り詰め。超過時は末尾を … に置換。
 function truncate(str, max = SHORT_LABEL_MAX) {
   if (!str) return ''
   return str.length > max ? str.slice(0, max) + '…' : str
