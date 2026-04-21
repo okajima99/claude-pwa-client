@@ -143,6 +143,9 @@ export function useChatStream({
         stop_reason: typeof event.stop_reason === 'string' ? event.stop_reason : null,
         is_error: !!event.is_error,
       }
+      // バブルがまだバッファ内 (RAF 待ち) だと last?.role !== 'agent' で弾かれ meta が消える。
+      // 先にバッファを強制フラッシュしてから meta を attach する。
+      cancelAndFlush(agent)
       setMessages(prev => {
         const msgs = [...prev[agent]]
         const last = msgs[msgs.length - 1]
@@ -157,6 +160,8 @@ export function useChatStream({
     if (event.type === 'ask_user_question') {
       const tool_use_id = event.tool_use_id
       const questions = event.input?.questions || []
+      // バブルがバッファ内だと既存判定に失敗し余計な空バブルが作られうる
+      cancelAndFlush(agent)
       setMessages(prev => {
         const msgs = [...prev[agent]]
         const last = msgs[msgs.length - 1]
@@ -187,6 +192,9 @@ export function useChatStream({
         ? event.message.content.filter(b => b?.type === 'tool_result')
         : []
       if (results.length === 0) return
+      // 直近の tool_use がまだバッファ内 (RAF 待ち) だと setMessages 側の tools に
+      // 存在せず id マッチに失敗して result が消える。先にバッファを強制フラッシュする。
+      cancelAndFlush(agent)
       // 直近のバブルに含まれる tool に result を埋め込む（過去 walk）
       setMessages(prev => {
         const msgs = prev[agent]
