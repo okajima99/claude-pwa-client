@@ -51,14 +51,30 @@ export function formatTool(block) {
       label = `grep  ${input?.pattern ?? ''}`
       shortLabel = truncate(label)
       break
-    case 'WebSearch':
-      label = `search "${input?.query ?? ''}"`
-      shortLabel = truncate(label)
+    case 'WebSearch': {
+      const q = input?.query ?? ''
+      shortLabel = truncate(`search "${q}"`)
+      // 展開時は query 全文 + ドメイン制限 (あれば)
+      const lines = [`search "${q}"`]
+      if (Array.isArray(input?.allowed_domains) && input.allowed_domains.length > 0) {
+        lines.push(`  allowed: ${input.allowed_domains.join(', ')}`)
+      }
+      if (Array.isArray(input?.blocked_domains) && input.blocked_domains.length > 0) {
+        lines.push(`  blocked: ${input.blocked_domains.join(', ')}`)
+      }
+      label = lines.join('\n')
       break
-    case 'WebFetch':
-      label = `fetch ${input?.url ?? ''}`
-      shortLabel = truncate(label)
+    }
+    case 'WebFetch': {
+      const url = input?.url ?? ''
+      shortLabel = truncate(`fetch ${url}`)
+      const lines = [`fetch ${url}`]
+      if (input?.prompt) {
+        lines.push('', `prompt:`, input.prompt)
+      }
+      label = lines.join('\n')
       break
+    }
     default: {
       label = `[${name}] ${JSON.stringify(input ?? {})}`
       // Extract the first string-valued field as a human-readable hint
