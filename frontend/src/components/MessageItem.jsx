@@ -196,7 +196,38 @@ function MetaLine({ meta, streaming, apiKeySource }) {
   return <div className="bubble-meta">{parts.join(' · ')}</div>
 }
 
+// 会話圧縮 (compact_boundary) 用バナー。SDK からは事後通知しか来ないので
+// 「圧縮完了」の表示のみ。pre→post のトークン減少と所要時間を添える。
+function formatCompactTokens(n) {
+  if (n == null) return null
+  if (n < 1000) return String(n)
+  if (n < 10000) return (n / 1000).toFixed(1) + 'k'
+  return Math.round(n / 1000) + 'k'
+}
+function CompactBanner({ msg }) {
+  const parts = []
+  if (msg.trigger) parts.push(msg.trigger)
+  if (msg.preTokens != null && msg.postTokens != null) {
+    parts.push(`${formatCompactTokens(msg.preTokens)} → ${formatCompactTokens(msg.postTokens)} tokens`)
+  }
+  const dur = formatDuration(msg.durationMs)
+  if (dur) parts.push(dur)
+  const detail = parts.length > 0 ? ` (${parts.join(' · ')})` : ''
+  return (
+    <div className="message system compact-banner">
+      <span className="compact-line">
+        <span className="compact-rule" />
+        <span className="compact-label">会話を圧縮しました{detail}</span>
+        <span className="compact-rule" />
+      </span>
+    </div>
+  )
+}
+
 const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKeySource }) {
+  if (msg.role === 'system' && msg.kind === 'compact') {
+    return <CompactBanner msg={msg} />
+  }
   if (msg.role === '__loading__') {
     return (
       <div className="message agent">

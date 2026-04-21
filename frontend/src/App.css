@@ -309,6 +309,29 @@
   background: none;
 }
 
+/* 会話圧縮バナー: 左右に罫線を伸ばしたターミナル風の区切り */
+.message.compact-banner {
+  justify-content: center;
+  margin: 12px 0;
+}
+.compact-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 520px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.compact-rule {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.compact-label {
+  white-space: nowrap;
+}
+
 /* 入力エリア */
 .inputarea {
   display: flex;

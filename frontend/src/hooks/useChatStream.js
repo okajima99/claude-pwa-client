@@ -132,6 +132,37 @@ export function useChatStream({
       return
     }
 
+    // compact_boundary: 会話圧縮が走ったタイミング。メタ(trigger / pre/post tokens / 所要時間)を
+    // 独立した system バブルとして差し込む。事前イベントは SDK に無いため事後通知のみ。
+    if (event.type === 'system' && event.subtype === 'compact_boundary') {
+      // 直近バブルを確定してから system 行を差し込む（RAF 待ちの tool_use が後から挿入されて
+      // 位置が逆転するのを防ぐ）
+      cancelAndFlush(agent)
+      const meta = event.compactMetadata || {}
+      const uuid = event.uuid || null
+      setMessages(prev => {
+        const msgs = prev[agent]
+        // reconnect 再生時の重複挿入を防ぐ
+        if (uuid && msgs.some(m => m.role === 'system' && m.kind === 'compact' && m.uuid === uuid)) {
+          return prev
+        }
+        return {
+          ...prev,
+          [agent]: [...msgs, {
+            id: generateId(),
+            role: 'system',
+            kind: 'compact',
+            uuid,
+            trigger: meta.trigger || null,
+            preTokens: typeof meta.preTokens === 'number' ? meta.preTokens : null,
+            postTokens: typeof meta.postTokens === 'number' ? meta.postTokens : null,
+            durationMs: typeof meta.durationMs === 'number' ? meta.durationMs : null,
+          }].slice(-MAX_MESSAGES),
+        }
+      })
+      return
+    }
+
     // result: 直近の agent バブルに meta（コスト・所要時間・ターン数・モデル・トークン・stop_reason）を埋め込む
     if (event.type === 'result') {
       const meta = {
