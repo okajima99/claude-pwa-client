@@ -18,9 +18,6 @@ export function useChatStream({
 
   const abortControllers = useRef({ agent_a: null, agent_b: null })
   const reconnectingRef = useRef({ agent_a: false, agent_b: false })
-  // 進行中の reconnect を強制終了するための AbortController
-  // （sendMessage/stopMessage 発動時に abort して、新ターンのバブルに過去 replay が流入するのを防ぐ）
-  const reconnectAbortRef = useRef({ agent_a: null, agent_b: null })
   const loadingRef = useRef(loading)
 
   // rAFバッチング用
@@ -353,22 +350,6 @@ export function useChatStream({
     // 変換済みなので BlobURL は解放
     imageItems.forEach(item => URL.revokeObjectURL(item.url))
 
-    // 新ターン開始前に保留中の rAF フラッシュとバッファ残骸を必ず捨てる
-    // （前ターンキャンセル直後などに残っていると新バブルに流入してズレる）
-    if (rafIdRef.current[agent] !== null) {
-      cancelAnimationFrame(rafIdRef.current[agent])
-      rafIdRef.current[agent] = null
-    }
-    streamBufRef.current[agent] = { text: null, thinking: null, newTools: [], needsNewBubble: false, dirty: false }
-    currentBubbleHasToolsRef.current[agent] = false
-    // 進行中の reconnect を abort（新ターンのバブルに過去 replay が流入するのを防ぐ）
-    if (reconnectAbortRef.current[agent]) {
-      try { reconnectAbortRef.current[agent].abort() } catch {}
-      reconnectAbortRef.current[agent] = null
-      reconnectingRef.current[agent] = false
-    }
-    replayModeRef.current[agent] = false
-
     // flushSync でDOMを確定させてからスクロール（rAF経由だとDOMコミット前に発火してscrollHeightが古い）
     isAtBottomRef.current = true
     const userMsg = { id: generateId(), role: 'user', text, imageUrls, fileNames }
@@ -468,19 +449,7 @@ export function useChatStream({
   // - 204 なら false、データあり(ストリーミング完了)なら true を返す
   // - 既存の最後の agent バブルは中身をリセット → 受信イベントで再構築（重複防止）
   const reconnectStream = async (agent) => {
-    // 既存の reconnect が残っていたら abort してから新規に入る
-    if (reconnectAbortRef.current[agent]) {
-      try { reconnectAbortRef.current[agent].abort() } catch {}
-    }
-    const abortCtrl = new AbortController()
-    reconnectAbortRef.current[agent] = abortCtrl
-    let res
-    try {
-      res = await fetch(`${API_BASE}/chat/${agent}/reconnect?from=0`, { signal: abortCtrl.signal })
-    } catch (e) {
-      if (e.name === 'AbortError') return false
-      throw e
-    }
+    const res = await fetch(`${API_BASE}/chat/${agent}/reconnect?from=0`)
     if (res.status === 204) return false
     if (!res.ok) return false
 
@@ -507,17 +476,9 @@ export function useChatStream({
     const decoder = new TextDecoder()
     let buf = ''
     let needsReconnect = false
-    let aborted = false
     try {
       while (true) {
-        let chunk
-        try {
-          chunk = await reader.read()
-        } catch (e) {
-          if (e.name === 'AbortError') { aborted = true; break }
-          throw e
-        }
-        const { done, value } = chunk
+        const { done, value } = await reader.read()
         if (done) break
         buf += decoder.decode(value, { stream: true })
         const lines = buf.split('\n')
@@ -533,8 +494,6 @@ export function useChatStream({
         }
       }
 
-      if (aborted) return false
-
       // ストリームが静かに切れた場合の再接続チェック
       try {
         const s = await fetch(`${API_BASE}/status/${agent}`).then(r => r.json()).catch(() => null)
@@ -544,23 +503,17 @@ export function useChatStream({
       return true
     } finally {
       replayModeRef.current[agent] = false
-      if (reconnectAbortRef.current[agent] === abortCtrl) {
-        reconnectAbortRef.current[agent] = null
-      }
-      // abort された場合は新ターンが既に始まっているので、loading/streaming 等を触らない
-      if (!aborted) {
-        cancelAndFlush(agent)
-        setLoading(prev => ({ ...prev, [agent]: false }))
-        setMessages(prev => {
-          const msgs = [...prev[agent]]
-          if (msgs.length > 0 && msgs[msgs.length - 1].streaming) {
-            msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], streaming: false }
-          }
-          return { ...prev, [agent]: msgs }
-        })
-        requestAnimationFrame(() => { scrollToBottom() })
-        if (needsReconnect) setTimeout(() => reconnectStream(agent), 1000)
-      }
+      cancelAndFlush(agent)
+      setLoading(prev => ({ ...prev, [agent]: false }))
+      setMessages(prev => {
+        const msgs = [...prev[agent]]
+        if (msgs.length > 0 && msgs[msgs.length - 1].streaming) {
+          msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], streaming: false }
+        }
+        return { ...prev, [agent]: msgs }
+      })
+      requestAnimationFrame(() => { scrollToBottom() })
+      if (needsReconnect) setTimeout(() => reconnectStream(agent), 1000)
     }
   }
 
@@ -599,21 +552,6 @@ export function useChatStream({
       abortControllers.current[agent].abort()
       abortControllers.current[agent] = null
     }
-    // 保留中の rAF フラッシュをキャンセルして、バッファに溜まっていた残骸を捨てる
-    // （残したまま次ターンを送ると、新バブルに前ターン内容が流入してズレる原因になる）
-    if (rafIdRef.current[agent] !== null) {
-      cancelAnimationFrame(rafIdRef.current[agent])
-      rafIdRef.current[agent] = null
-    }
-    streamBufRef.current[agent] = { text: null, thinking: null, newTools: [], needsNewBubble: false, dirty: false }
-    currentBubbleHasToolsRef.current[agent] = false
-    // 進行中の reconnect も abort（stop 後の replay が残バブルに流入するのを防ぐ）
-    if (reconnectAbortRef.current[agent]) {
-      try { reconnectAbortRef.current[agent].abort() } catch {}
-      reconnectAbortRef.current[agent] = null
-      reconnectingRef.current[agent] = false
-    }
-    replayModeRef.current[agent] = false
     try {
       await fetch(`${API_BASE}/chat/${agent}/stop`, { method: 'POST' })
     } catch {}

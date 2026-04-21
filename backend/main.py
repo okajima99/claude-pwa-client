@@ -134,6 +134,9 @@ class StreamState:
     client_session_id: str | None = None
     pending_question: asyncio.Future | None = None
     pending_question_tool_id: str | None = None
+    # /stop や新ターン割り込みで tool_use が宙ぶらりんになった場合の id。
+    # 次の /stream で synthetic tool_result を先頭に入れて履歴を閉じる。
+    orphaned_tool_use_id: str | None = None
 
 
 stream_states: dict[str, StreamState] = {name: StreamState() for name in AGENTS}
@@ -575,14 +578,18 @@ async def chat_stream(
 
     state = stream_states[agent]
 
-    # 新ターン開始: 直前のタスクが残っていれば完全にキャンセル・待機してから buffer をクリア
-    # （state.complete=True でもバッファに前ターン残骸があるケースを防ぐ）
+    # 新ターン開始: 直前のタスクが残っていれば完全にキャンセル・待機する
+    # （割り込まれた tool_use は orphan として記録し、下で tool_result を合成して閉じる）
     if not state.complete and state.task and not state.task.done():
         try:
             if state.client is not None:
                 await state.client.interrupt()
         except Exception:
             logger.exception("interrupt failed during new-stream for agent=%s", agent)
+        cur = agent_status[agent].get("current_tool")
+        if cur and cur.get("id"):
+            state.orphaned_tool_use_id = cur["id"]
+        agent_status[agent]["current_tool"] = None
         state.task.cancel()
         try:
             await state.task
@@ -592,6 +599,21 @@ async def chat_stream(
     if state.complete or state.task is None or state.task.done():
         saved_files = await save_to_tmp(files, agent)
         content = build_content(message, saved_files)
+
+        # 孤児 tool_use が残っていれば synthetic tool_result を先頭に差し込んで履歴を閉じる
+        # （これをしないと Anthropic API が "tool_use ids without tool_result" で 400 を返し、
+        #  以降のターンの推論が空になって表示が 1 ターンずれる）
+        if state.orphaned_tool_use_id:
+            content = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": state.orphaned_tool_use_id,
+                    "content": "User cancelled the previous turn.",
+                    "is_error": True,
+                },
+                *content,
+            ]
+            state.orphaned_tool_use_id = None
 
         state.buffer = []
         state.buffer_id = str(uuid.uuid4())
@@ -658,10 +680,12 @@ async def chat_stop(agent: str):
     if state.pending_question is not None and not state.pending_question.done():
         state.pending_question.cancel()
 
+    # 実行中だった tool_use を孤児として記録（次ターン先頭で tool_result を合成して閉じる）
+    cur = agent_status[agent].get("current_tool")
+    if cur and cur.get("id"):
+        state.orphaned_tool_use_id = cur["id"]
+
     state.complete = True
-    # バッファ残骸をクリア（次ターン以降の reconnect で古い内容が replay されないように）
-    state.buffer = []
-    state.buffer_id = str(uuid.uuid4())
     _reset_activity(agent)
 
     return {"status": "stopped"}
