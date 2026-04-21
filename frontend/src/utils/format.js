@@ -51,6 +51,14 @@ export function formatTool(block) {
       label = `grep  ${input?.pattern ?? ''}`
       shortLabel = truncate(label)
       break
+    case 'WebSearch':
+      label = `search "${input?.query ?? ''}"`
+      shortLabel = truncate(label)
+      break
+    case 'WebFetch':
+      label = `fetch ${input?.url ?? ''}`
+      shortLabel = truncate(label)
+      break
     default: {
       label = `[${name}] ${JSON.stringify(input ?? {})}`
       // Extract the first string-valued field as a human-readable hint
@@ -115,13 +123,27 @@ export function formatModelName(modelUsage) {
   return key
 }
 
+// ANSI エスケープ (CSI m カラー等) を除去。Bash の `ls --color` などが ESC[...m を混ぜてくるので
+// 表示前に落とす。OSC / DCS / その他のシーケンスもついでに最低限だけ除去。
+// eslint-disable-next-line no-control-regex
+const ANSI_CSI_RE = /\x1B\[[0-?]*[ -/]*[@-~]/g
+// eslint-disable-next-line no-control-regex
+const ANSI_OSC_RE = /\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)/g
+// eslint-disable-next-line no-control-regex
+const ANSI_OTHER_RE = /\x1B[@-Z\\-_]/g
+
+export function stripAnsi(s) {
+  if (typeof s !== 'string') return s
+  return s.replace(ANSI_CSI_RE, '').replace(ANSI_OSC_RE, '').replace(ANSI_OTHER_RE, '')
+}
+
 export function formatToolResultContent(content) {
   if (content == null) return ''
-  if (typeof content === 'string') return content
+  if (typeof content === 'string') return stripAnsi(content)
   if (Array.isArray(content)) {
     return content
       .map(b => {
-        if (b?.type === 'text') return b.text ?? ''
+        if (b?.type === 'text') return stripAnsi(b.text ?? '')
         if (b?.type === 'image') return '[画像]'
         return JSON.stringify(b)
       })

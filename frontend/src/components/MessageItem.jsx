@@ -6,6 +6,39 @@ import { diffLines, compactDiff } from '../utils/diff.js'
 
 const RESULT_PREVIEW_CHARS = 800
 
+// Grep / Glob の結果本文をパスリンク化する。
+// Grep content mode: "path:line:content" / files_with_matches: "path"
+// Glob: "path" (絶対 or 相対)
+// パス判定ゆるめ: 先頭から [:\s] までを path と仮定し、/ を含むか拡張子っぽいものだけリンク化。
+function LinkifiedResult({ text, onOpenFile, errorClass }) {
+  const lines = text.split('\n')
+  return (
+    <pre className={`tool-result-text ${errorClass || ''}`}>
+      {lines.map((line, i) => {
+        // 行頭のパス部分を抽出: 空白とコロンで切る
+        const m = line.match(/^([^\s:]+)(.*)$/)
+        if (!m) return <div key={i}>{line || ' '}</div>
+        const [, pathCandidate, rest] = m
+        const looksLikePath = pathCandidate.includes('/') || /\.[a-zA-Z0-9]{1,6}$/.test(pathCandidate)
+        if (!looksLikePath || !onOpenFile) {
+          return <div key={i}>{line || ' '}</div>
+        }
+        const handleClick = (e) => {
+          e.stopPropagation()
+          e.preventDefault()
+          onOpenFile(pathCandidate)
+        }
+        return (
+          <div key={i}>
+            <span className="file-link" onClick={handleClick} role="link" tabIndex={0}>{pathCandidate}</span>
+            {rest}
+          </div>
+        )
+      })}
+    </pre>
+  )
+}
+
 function DiffView({ diffInput }) {
   if (!diffInput) return null
   if (diffInput.kind === 'edit') {
@@ -149,13 +182,18 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKe
                 const resultText = t.result ? formatToolResultContent(t.result.content) : null
                 const truncated = resultText && resultText.length > RESULT_PREVIEW_CHARS
                 const hasDiff = !!t.diffInput
-                const hasMore = hasDiff || (t.shortLabel && t.shortLabel !== t.label) || !!t.result
+                // Read はパスが summary に出てるので input の echo は冗長。tool-input-full は描画しない
+                const showInputFull = !hasDiff && t.name !== 'Read' && t.shortLabel && t.shortLabel !== t.label
+                const hasMore = hasDiff || showInputFull || !!t.result
+                // diff のある Edit/Write は初期展開（ターミナル風に変更点を目視できるように）
+                const openByDefault = hasDiff
                 return (
                   <details
                     key={t.id}
                     className={`tool-block ${t.result?.is_error ? 'is-error' : ''}`}
+                    open={openByDefault}
                   >
-                    <summary className={`tool-line tool-${t.name.toLowerCase()}`}>
+                    <summary className={`tool-line tool-${t.name.toLowerCase()}`} title={t.label}>
                       <span className="tool-marker">{hasMore ? '▸' : '·'}</span>
                       <span className="tool-short">{t.shortLabel || t.label}</span>
                       {t.result?.is_error && <span className="tool-err-mark"> ⚠</span>}
@@ -167,14 +205,21 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKe
                       <div className="tool-body">
                         {hasDiff ? (
                           <DiffView diffInput={t.diffInput} />
-                        ) : t.shortLabel !== t.label && (
+                        ) : showInputFull && (
                           <pre className="tool-input-full">{t.label}</pre>
                         )}
-                        {t.result && (
-                          <pre className={`tool-result-text ${t.result.is_error ? 'is-error' : ''}`}>
-                            {truncated ? resultText.slice(0, RESULT_PREVIEW_CHARS) + '\n…（省略）' : resultText}
-                          </pre>
-                        )}
+                        {t.result && (() => {
+                          const shown = truncated ? resultText.slice(0, RESULT_PREVIEW_CHARS) + '\n…（省略）' : resultText
+                          const errorClass = t.result.is_error ? 'is-error' : ''
+                          if ((t.name === 'Grep' || t.name === 'Glob') && !t.result.is_error) {
+                            return <LinkifiedResult text={shown} onOpenFile={onOpenFile} errorClass={errorClass} />
+                          }
+                          return (
+                            <pre className={`tool-result-text ${errorClass}`}>
+                              {shown}
+                            </pre>
+                          )
+                        })()}
                       </div>
                     )}
                   </details>
