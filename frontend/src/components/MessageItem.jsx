@@ -260,7 +260,11 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKe
                 const hasDiff = !!t.diffInput
                 // Read はパスが summary に出てるので input の echo は冗長。tool-input-full は描画しない
                 const showInputFull = !hasDiff && t.name !== 'Read' && t.shortLabel && t.shortLabel !== t.label
-                const hasMore = hasDiff || showInputFull || !!t.result
+                // Edit/Write 成功時の "File updated successfully" みたいな確認文は冗長 (diff が見えてれば自明)。
+                // エラー時は原因が書かれてるので表示する。
+                const suppressSuccessResult = hasDiff && t.result && !t.result.is_error
+                const showResult = !!t.result && !suppressSuccessResult
+                const hasMore = hasDiff || showInputFull || showResult
                 // diff のある Edit/Write は初期展開（ターミナル風に変更点を目視できるように）
                 const openByDefault = hasDiff
                 return (
@@ -273,7 +277,7 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKe
                       <span className="tool-marker">{hasMore ? '▸' : '·'}</span>
                       <span className="tool-short">{t.shortLabel || t.label}</span>
                       {t.result?.is_error && <span className="tool-err-mark"> ⚠</span>}
-                      {resultText && (
+                      {resultText && showResult && (
                         <span className="tool-meta"> · {resultText.length}文字</span>
                       )}
                     </summary>
@@ -284,7 +288,7 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKe
                         ) : showInputFull && (
                           <pre className="tool-input-full">{t.label}</pre>
                         )}
-                        {t.result && (() => {
+                        {showResult && (() => {
                           const shown = truncated ? resultText.slice(0, RESULT_PREVIEW_CHARS) + '\n…（省略）' : resultText
                           const errorClass = t.result.is_error ? 'is-error' : ''
                           if ((t.name === 'Grep' || t.name === 'Glob') && !t.result.is_error) {
