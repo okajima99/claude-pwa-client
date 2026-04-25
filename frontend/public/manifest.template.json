@@ -1,6 +1,6 @@
 {
-  "name": "Claude PWA Client",
-  "short_name": "Claude PWA",
+  "name": "__APP_TITLE__",
+  "short_name": "__APP_SHORT_NAME__",
   "display": "standalone",
   "start_url": "/",
   "background_color": "#111111",

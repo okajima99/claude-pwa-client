@@ -1,7 +1,8 @@
 config.json
 backend/config.json
 backend/sessions.json
-.env
+/.env
+frontend/public/manifest.json
 __pycache__/
 *.pyc
 node_modules/
