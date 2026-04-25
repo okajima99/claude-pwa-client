@@ -7,12 +7,12 @@
   "theme_color": "#111111",
   "icons": [
     {
-      "src": "/icon-192.svg",
+      "src": "__APP_ICON_192__",
       "sizes": "192x192",
       "type": "image/svg+xml"
     },
     {
-      "src": "/icon-512.svg",
+      "src": "__APP_ICON_512__",
       "sizes": "512x512",
       "type": "image/svg+xml",
       "purpose": "any maskable"

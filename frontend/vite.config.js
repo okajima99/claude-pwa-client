@@ -12,6 +12,8 @@ function generateManifest(env) {
   const out = template
     .replace(/__APP_TITLE__/g, env.VITE_APP_TITLE || 'App')
     .replace(/__APP_SHORT_NAME__/g, env.VITE_APP_SHORT_NAME || 'App')
+    .replace(/__APP_ICON_192__/g, env.VITE_APP_ICON_192 || '/icon-192.svg')
+    .replace(/__APP_ICON_512__/g, env.VITE_APP_ICON_512 || '/icon-512.svg')
   writeFileSync(resolve(root, 'manifest.json'), out)
 }
 

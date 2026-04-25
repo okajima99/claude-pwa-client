@@ -3,6 +3,8 @@ backend/config.json
 backend/sessions.json
 /.env
 frontend/public/manifest.json
+frontend/public/local-icons/
+frontend/.env.local
 __pycache__/
 *.pyc
 node_modules/
