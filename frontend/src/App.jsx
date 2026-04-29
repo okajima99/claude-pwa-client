@@ -2,8 +2,10 @@ import { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } fro
 import './App.css'
 import MessageItem from './components/MessageItem.jsx'
 import ActivityBar from './components/ActivityBar.jsx'
+import StatusBar from './components/StatusBar.jsx'
+import TabBar from './components/TabBar.jsx'
+import ConfirmDialog from './components/ConfirmDialog.jsx'
 import { API_BASE, AGENTS } from './constants.js'
-import { pctClass, timeUntil } from './utils/format.js'
 import { useStatus } from './hooks/useStatus.js'
 import { useAttachments } from './hooks/useAttachments.js'
 import { useChatStorage } from './hooks/useChatStorage.js'
@@ -186,12 +188,10 @@ export default function App() {
     }
   }
 
-  // PWA フォア視聴の状態を backend に通知する。
-  // - visibilitychange の瞬間に POST /push/state で即時反映 (連続性最大)
-  // - visible 中は 60 秒間隔で POST /push/heartbeat (アプリ kill 時の保険)
+  // PWA フォア視聴状態を backend に通知する。visibilitychange の瞬間に
+  // POST /push/state を 1 回投げるだけ。ポーリング無し = 通信量ゼロに近い。
   // backend はこれをもとにターン完了通知 (Web Push) を抑止/解除する。
   useEffect(() => {
-    let timer = null
     const sendState = (visible) => {
       fetch(`${API_BASE}/push/state`, {
         method: 'POST',
@@ -200,26 +200,10 @@ export default function App() {
         keepalive: true,
       }).catch(() => {})
     }
-    const beat = () => {
-      if (document.hidden) return
-      fetch(`${API_BASE}/push/heartbeat`, { method: 'POST', keepalive: true }).catch(() => {})
-    }
-    const start = () => {
-      if (timer) return
-      sendState(true)
-      timer = setInterval(beat, 60_000)
-    }
-    const stop = () => {
-      if (timer) { clearInterval(timer); timer = null }
-      sendState(false)
-    }
-    if (!document.hidden) start()
-    const onVis = () => { if (document.hidden) stop(); else start() }
+    sendState(!document.hidden)
+    const onVis = () => sendState(!document.hidden)
     document.addEventListener('visibilitychange', onVis)
-    return () => {
-      if (timer) clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVis)
-    }
+    return () => document.removeEventListener('visibilitychange', onVis)
   }, [])
 
   // PWA リセット (Service Worker + Cache Storage を消して強制再読み込み)。
@@ -248,44 +232,13 @@ export default function App() {
 
   return (
     <div className="app">
-      {/* ステータスバー */}
-      <div className="statusbar">
-        {status ? (
-          <>
-            <span className="model">{status.model}</span>
-            {(() => {
-              // resets_at が未知 (0) の間は生の pct を信用する。
-              // 既知かつ過去の時刻になった時だけ「ウィンドウが切れた」= 0% と解釈する。
-              const expired = status.five_hour_resets_at > 0 && status.five_hour_resets_at < nowSec
-              const pct = expired ? 0 : status.five_hour_pct
-              return (
-                <span className={pctClass(pct)}>5h {Math.round(pct)}% <span className="dim">{timeUntil(status.five_hour_resets_at, nowSec)}</span></span>
-              )
-            })()}
-            <span className={pctClass(status.seven_day_pct)}>7d {Math.round(status.seven_day_pct)}%</span>
-            <span className={pctClass(status.ctx_pct)}>ctx {Math.round(status.ctx_pct || 0)}%</span>
-          </>
-        ) : (
-          <span className="dim">---</span>
-        )}
-      </div>
-
-      {/* タブ */}
-      <div className="tabs">
-        {AGENTS.map(agent => {
-          const badge = tabBadges[agent]
-          return (
-            <button
-              key={agent}
-              className={`tab ${activeAgent === agent ? 'active' : ''}`}
-              onClick={() => { setActiveAgent(agent); localStorage.setItem('cpc_active_agent', agent) }}
-            >
-              {displayNames[agent] || agent.toUpperCase()}
-              {badge && <span className={`tab-badge ${badge.kind}`}>{badge.label}</span>}
-            </button>
-          )
-        })}
-      </div>
+      <StatusBar status={status} nowSec={nowSec} />
+      <TabBar
+        activeAgent={activeAgent}
+        setActiveAgent={setActiveAgent}
+        displayNames={displayNames}
+        tabBadges={tabBadges}
+      />
 
       {/* メッセージ一覧 */}
       <div className="messages-container">
@@ -395,29 +348,24 @@ export default function App() {
         </div>
       </div>
 
-      {confirmEnd && (
-        <div className="confirm-overlay" onClick={() => setConfirmEnd(false)}>
-          <div className="confirm-dialog" onClick={e => e.stopPropagation()}>
-            <p className="confirm-text">セッションを終了しますか？</p>
-            <div className="confirm-actions">
-              <button onClick={() => setConfirmEnd(false)} className="confirm-btn no">いいえ</button>
-              <button onClick={handleEndSession} className="confirm-btn yes">はい</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {confirmReset && (
-        <div className="confirm-overlay" onClick={() => setConfirmReset(false)}>
-          <div className="confirm-dialog" onClick={e => e.stopPropagation()}>
-            <p className="confirm-text">本当にリセットしますか？<br /><span className="dim">キャッシュと Service Worker を削除して再読み込みします。会話ログは消えません。</span></p>
-            <div className="confirm-actions">
-              <button onClick={() => setConfirmReset(false)} className="confirm-btn no">いいえ</button>
-              <button onClick={handleReset} className="confirm-btn yes">はい</button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={confirmEnd}
+        text="セッションを終了しますか？"
+        onCancel={() => setConfirmEnd(false)}
+        onConfirm={handleEndSession}
+      />
+      <ConfirmDialog
+        open={confirmReset}
+        text={
+          <>
+            本当にリセットしますか？
+            <br />
+            <span className="dim">キャッシュと Service Worker を削除して再読み込みします。会話ログは消えません。</span>
+          </>
+        }
+        onCancel={() => setConfirmReset(false)}
+        onConfirm={handleReset}
+      />
 
       <Suspense fallback={null}>
         {previewPath && (
