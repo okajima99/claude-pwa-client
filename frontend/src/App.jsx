@@ -9,6 +9,7 @@ import { useAttachments } from './hooks/useAttachments.js'
 import { useChatStorage } from './hooks/useChatStorage.js'
 import { useAutoScroll } from './hooks/useAutoScroll.js'
 import { useChatStream } from './hooks/useChatStream.js'
+import { enablePush, disablePush, isPushSupported, isStandalone, isPushEnabledLocally } from './utils/push.js'
 const FilePreviewModal = lazy(() => import('./FilePreviewModal.jsx'))
 const FileTreePanel = lazy(() => import('./FileTreePanel.jsx'))
 
@@ -161,6 +162,30 @@ export default function App() {
     endSession()
   }
 
+  // Web Push 通知 ON/OFF
+  const [pushEnabled, setPushEnabled] = useState(() => isPushEnabledLocally())
+  const [pushBusy, setPushBusy] = useState(false)
+  const pushAvailable = isPushSupported() && isStandalone()
+
+  const handleTogglePush = async () => {
+    if (pushBusy) return
+    setPushBusy(true)
+    setMenuOpen(false)
+    try {
+      if (pushEnabled) {
+        await disablePush()
+        setPushEnabled(false)
+      } else {
+        await enablePush()
+        setPushEnabled(true)
+      }
+    } catch (e) {
+      alert(e?.message || '通知設定の変更に失敗しました')
+    } finally {
+      setPushBusy(false)
+    }
+  }
+
   return (
     <div className="app">
       {/* ステータスバー */}
@@ -277,6 +302,11 @@ export default function App() {
               <button onClick={() => { fetchLatest(); requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) }); setMenuOpen(false) }} className="menu-item">
                 最新を取得
               </button>
+              {pushAvailable && (
+                <button onClick={handleTogglePush} className="menu-item" disabled={pushBusy}>
+                  {pushEnabled ? '通知を無効にする' : '通知を有効にする'}
+                </button>
+              )}
               <button onClick={() => { setMenuOpen(false); setConfirmEnd(true) }} className="menu-item end">
                 セッション終了
               </button>
