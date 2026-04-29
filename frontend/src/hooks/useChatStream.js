@@ -357,6 +357,22 @@ export function useChatStream({
     }
   }
 
+  // 全 agent に対して reconnectStream を強制発火する（バッファ先頭から再生）。
+  // iOS swipe-up や bfcache 復帰時など、SSE が切れている可能性が高い場面で使う。
+  const forceResyncAll = () => {
+    for (const agent of AGENTS) {
+      if (reconnectingRef.current[agent]) continue
+      if (abortControllers.current[agent]) {
+        abortControllers.current[agent].abort()
+        abortControllers.current[agent] = null
+      }
+      reconnectingRef.current[agent] = true
+      reconnectStream(agent).finally(() => {
+        reconnectingRef.current[agent] = false
+      })
+    }
+  }
+
   // アプリ起動時チェック（マウント時に1回だけ）
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { checkAndReconnect() }, [])
@@ -369,20 +385,47 @@ export function useChatStream({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // アプリ復帰時チェック（同上、リスナー登録は1回だけ）
+  // アプリ復帰時チェック（visibilitychange / pageshow / focus / 遅延再チェックを併設）
+  // - visibilitychange: タブ切替・短時間バックグラウンド復帰
+  // - pageshow + persisted: bfcache 復帰
+  // - focus: iOS で visibilitychange が発火しない経路の保険（swipe-up からの復帰等）
+  // - 30 秒以上のバックグラウンド: SSE が iOS により切断されている可能性が高いので強制再同期
   useEffect(() => {
-    const handle = () => {
-      if (!document.hidden) {
-        // バックグラウンド中にrAFが止まって未反映のストリームデータがあれば強制反映
-        for (const agent of AGENTS) {
-          cancelAndFlush(agent)
-        }
-        checkAndReconnect(true)
-        requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) })
+    let hiddenAt = null
+
+    const onVisibility = () => {
+      if (document.hidden) {
+        hiddenAt = Date.now()
+        return
       }
+      const wasLong = hiddenAt != null && (Date.now() - hiddenAt) > 30_000
+      hiddenAt = null
+
+      for (const agent of AGENTS) cancelAndFlush(agent)
+      if (wasLong) forceResyncAll()
+      else checkAndReconnect(true)
+      // 復帰直後に古い fetch がまだ握っているケースのカバー
+      setTimeout(() => { if (!document.hidden) checkAndReconnect(true) }, 800)
+      requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) })
     }
-    document.addEventListener('visibilitychange', handle)
-    return () => document.removeEventListener('visibilitychange', handle)
+
+    const onPageShow = (e) => {
+      if (e.persisted) forceResyncAll()
+      else checkAndReconnect(true)
+    }
+
+    const onFocus = () => {
+      if (!document.hidden) checkAndReconnect(true)
+    }
+
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('pageshow', onPageShow)
+    window.addEventListener('focus', onFocus)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('pageshow', onPageShow)
+      window.removeEventListener('focus', onFocus)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
