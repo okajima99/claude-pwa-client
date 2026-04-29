@@ -505,6 +505,21 @@ async def _run_sdk_background(agent: str, content: list):
                                     agent_status[agent]["todos"] = todos
                             elif block.name == "ExitPlanMode":
                                 agent_status[agent]["plan_mode"] = False
+                            elif block.name == "PushNotification":
+                                # 自発通知 (アイドル中・長尺タスク中の「気づき」通知) は通常返信の
+                                # bubble フローから外し、専用 system イベントとして扱う。
+                                # 同じバブルに混ざると次の返信が 1 ターン遅れて見える事象を防ぐ。
+                                notif_msg = ""
+                                if isinstance(block.input, dict):
+                                    notif_msg = str(block.input.get("message", "") or "")
+                                state.buffer.append(
+                                    "data: " + json.dumps({
+                                        "type": "proactive_notification",
+                                        "message": notif_msg,
+                                        "ts": time.time(),
+                                        "tool_use_id": block.id,
+                                    }, ensure_ascii=False) + "\n\n"
+                                )
 
             elif isinstance(msg, UserMessage):
                 is_subagent = msg.parent_tool_use_id is not None

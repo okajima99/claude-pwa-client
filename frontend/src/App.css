@@ -332,6 +332,26 @@
   white-space: nowrap;
 }
 
+/* 自発通知 (PushNotification) バナー: 中央寄せの薄いインフォ行 */
+.message.proactive-banner {
+  justify-content: center;
+  margin: 8px 0;
+}
+.proactive-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 80%;
+  padding: 4px 10px;
+  border-radius: 10px;
+  background: var(--bg3);
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.proactive-icon { font-size: 11px; }
+.proactive-text { white-space: pre-wrap; word-break: break-word; }
+.proactive-time { opacity: 0.6; font-size: 11px; }
+
 /* 入力エリア */
 .inputarea {
   display: flex;

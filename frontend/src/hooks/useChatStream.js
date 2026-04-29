@@ -168,6 +168,32 @@ export function useChatStream({
       return
     }
 
+    // proactive_notification: PushNotification ツール経由の自発通知。
+    // 通常返信の bubble フローから完全に分離して system バブルとして差し込む。
+    // (同じレーンに混ぜると次の assistant 返信が 1 ターン遅れて見える)
+    if (event.type === 'proactive_notification') {
+      cancelAndFlush(agent)
+      const tid = event.tool_use_id || null
+      setMessages(prev => {
+        const msgs = prev[agent]
+        if (tid && msgs.some(m => m.role === 'system' && m.kind === 'proactive' && m.tool_use_id === tid)) {
+          return prev
+        }
+        return {
+          ...prev,
+          [agent]: [...msgs, {
+            id: generateId(),
+            role: 'system',
+            kind: 'proactive',
+            message: event.message || '',
+            ts: typeof event.ts === 'number' ? event.ts : null,
+            tool_use_id: tid,
+          }].slice(-MAX_MESSAGES),
+        }
+      })
+      return
+    }
+
     // result: 直近の agent バブルに meta（コスト・所要時間・ターン数・モデル・トークン・stop_reason）を埋め込む
     if (event.type === 'result') {
       const meta = {
@@ -267,11 +293,17 @@ export function useChatStream({
       .join('\n')
     // Agent（サブエージェント）/AskUserQuestion/TodoWrite は ActivityBar or 専用UIで描画するため tool-log から除外
     const newTools = event.message.content
-      .filter(b => b.type === 'tool_use' && b.name !== 'Agent' && b.name !== 'AskUserQuestion' && b.name !== 'TodoWrite')
+      .filter(b => b.type === 'tool_use'
+        && b.name !== 'Agent'
+        && b.name !== 'AskUserQuestion'
+        && b.name !== 'TodoWrite'
+        && b.name !== 'PushNotification')
       .map(b => formatTool(b))
     // バブル分割判定はフィルタ前の全 tool_use 数を使う。
     // フィルタで除外された tool (TodoWrite 等) を挟んだ後の text が前のテキストを上書きしてしまうバグの対策。
-    const hasAnyToolUse = event.message.content.some(b => b.type === 'tool_use')
+    // ただし PushNotification は専用 system バブルに分離済みなので分割境界にしない
+    // (これを境界にすると次の通常返信が 1 ターン遅れて新規バブルに弾かれる)
+    const hasAnyToolUse = event.message.content.some(b => b.type === 'tool_use' && b.name !== 'PushNotification')
 
     const buf = streamBufRef.current[agent]
     // reconnect中は既存バブルに積むだけ（分割すると2重表示になる）
