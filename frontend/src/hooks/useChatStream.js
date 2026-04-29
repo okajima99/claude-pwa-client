@@ -39,14 +39,6 @@ export function useChatStream({
   // reconnect中はバブル分割を抑制するフラグ
   const replayModeRef = useRef({ agent_a: false, agent_b: false })
 
-  // 旧バッファ位置追跡キーの掃除（T1: from=0 固定移行で不要になった）
-  useEffect(() => {
-    try {
-      localStorage.removeItem('cpc_bufpos')
-      localStorage.removeItem('cpc_bufid')
-    } catch { /* ignored */ }
-  }, [])
-
   // サーバーがまだ streaming 中なら reconnect を起動（fire-and-forget）
   // reconnectingRef は即時セットされるので呼び出し側 finally の二重起動防止も効く
   const _reconnectIfStreaming = async (agent) => {

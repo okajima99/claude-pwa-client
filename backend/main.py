@@ -4,6 +4,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -118,10 +119,19 @@ def _load_vapid() -> dict | None:
     if not VAPID_PATH.exists():
         return None
     try:
-        return json.loads(VAPID_PATH.read_text())
+        data = json.loads(VAPID_PATH.read_text())
     except Exception:
         logger.exception("Failed to parse vapid.json")
         return None
+    # pywebpush.webpush() は内部で Vapid.from_string を呼ぶが、それは PEM
+    # ヘッダ/フッタを剥がした base64 部分のみ受け付ける。起動時に 1 回だけ
+    # 抽出しておき、配信ごとの再計算を避ける。
+    pem = data.get("private_pem", "")
+    if pem:
+        data["private_b64"] = "".join(
+            line for line in pem.splitlines() if not line.startswith("-----")
+        ).strip()
+    return data
 
 
 def _load_subscriptions() -> list[dict]:
@@ -439,29 +449,32 @@ def _serialize_sdk_message(msg: Any) -> dict | None:
 
 
 # --- Web Push 配信 ---
+_NOTIF_BODY_RE = re.compile(r"\s+")
+
+
+def _sanitize_notif_body(text: str) -> str:
+    """改行・連続空白・制御文字を 1 個のスペースに畳む。
+    iOS のロック画面通知は 1 行表示で、生改行や制御文字が入ると見え方が崩れる。
+    """
+    if not text:
+        return ""
+    return _NOTIF_BODY_RE.sub(" ", text).strip()
+
+
 async def _broadcast_push(message: str, title: str | None = None) -> None:
     """登録済みの全 Web Push サブスクリプションに通知を送る。
-
-    アプリ起動中は SSE で proactive_notification が届くが、
-    アプリ完全終了 / ロック画面の時は OS 通知として届けるためにこちらが必要。
+    アプリ閉じてる / 画面オフ時の OS 通知届け先。
     """
     if not _HAS_WEBPUSH or not vapid_config or not subscriptions:
         return
 
-    private_pem = vapid_config.get("private_pem")
-    if not private_pem:
+    private_b64 = vapid_config.get("private_b64")
+    if not private_b64:
         return
-
-    # pywebpush の webpush() は内部で Vapid.from_string を呼ぶが、それは
-    # PEM ヘッダ/フッタを剥がした base64 部分しか受け付けない (1.9.4)。
-    # gen_vapid.py が PEM 形式で書き出している都合上、ここで抽出する。
-    private_b64 = "".join(
-        line for line in private_pem.splitlines() if not line.startswith("-----")
-    ).strip()
 
     payload = json.dumps({
         "title": title or NOTIFICATION_TITLE_DEFAULT,
-        "body": message or "",
+        "body": _sanitize_notif_body(message),
     }, ensure_ascii=False)
     dead: list[dict] = []
 
@@ -679,7 +692,6 @@ async def _run_sdk_background(agent: str, content: list):
                 # ターン完了通知: PWA をフォアで見ていない時のみ Web Push で届ける。
                 # 直前ターンの assistant text を冒頭 140 文字に切って body に。
                 turn_text = last_assistant_text.get(agent, "").strip()
-                last_assistant_text[agent] = ""  # 次ターンに備えてクリア
                 if turn_text and not _user_is_visible():
                     body = turn_text if len(turn_text) <= 140 else (turn_text[:140] + "…")
                     asyncio.create_task(_broadcast_push(body, _notification_title_for(agent)))
@@ -703,6 +715,10 @@ async def _run_sdk_background(agent: str, content: list):
     finally:
         state.complete = True
         _reset_activity(agent)
+        # ターン中に蓄積した assistant text を必ずクリアする。
+        # 例外 / interrupt / stop で ResultMessage を経由しなかった場合に
+        # 古い text が次ターンの通知 body に混入するのを防ぐ。
+        last_assistant_text[agent] = ""
         # 回答待ちが残っていたらキャンセル
         if state.pending_question is not None and not state.pending_question.done():
             state.pending_question.cancel()
