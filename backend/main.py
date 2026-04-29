@@ -142,6 +142,8 @@ vapid_config: dict | None = _load_vapid()
 subscriptions: list[dict] = _load_subscriptions()
 # VAPID claim の sub (連絡先) は config.json で上書き可。デフォルトは汎用 mailto
 VAPID_SUB = config.get("vapid_sub", "mailto:admin@example.com")
+# OS 通知のタイトル (バナー / ロック画面に出る見出し)
+NOTIFICATION_TITLE = config.get("notification_title", "Notification")
 
 
 # --- セッション管理 ---
@@ -429,7 +431,7 @@ async def _broadcast_push(message: str) -> None:
     if not private_pem:
         return
 
-    payload = json.dumps({"title": "Notification", "body": message or ""}, ensure_ascii=False)
+    payload = json.dumps({"title": NOTIFICATION_TITLE, "body": message or ""}, ensure_ascii=False)
     dead: list[dict] = []
 
     def _send_one(sub: dict) -> None:
