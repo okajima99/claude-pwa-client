@@ -17,6 +17,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+try:
+    from pywebpush import WebPushException, webpush
+    _HAS_WEBPUSH = True
+except ImportError:
+    _HAS_WEBPUSH = False
+
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
@@ -102,6 +108,41 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- Web Push (VAPID + subscriptions) ---
+VAPID_PATH = Path(__file__).parent / "vapid.json"
+SUBSCRIPTIONS_PATH = Path(__file__).parent / "subscriptions.json"
+
+
+def _load_vapid() -> dict | None:
+    if not VAPID_PATH.exists():
+        return None
+    try:
+        return json.loads(VAPID_PATH.read_text())
+    except Exception:
+        logger.exception("Failed to parse vapid.json")
+        return None
+
+
+def _load_subscriptions() -> list[dict]:
+    if not SUBSCRIPTIONS_PATH.exists():
+        return []
+    try:
+        data = json.loads(SUBSCRIPTIONS_PATH.read_text())
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _save_subscriptions() -> None:
+    SUBSCRIPTIONS_PATH.write_text(json.dumps(subscriptions, indent=2))
+
+
+vapid_config: dict | None = _load_vapid()
+subscriptions: list[dict] = _load_subscriptions()
+# VAPID claim の sub (連絡先) は config.json で上書き可。デフォルトは汎用 mailto
+VAPID_SUB = config.get("vapid_sub", "mailto:admin@example.com")
+
 
 # --- セッション管理 ---
 SESSIONS_PATH = Path(__file__).parent / "sessions.json"
@@ -374,6 +415,55 @@ def _serialize_sdk_message(msg: Any) -> dict | None:
     return None
 
 
+# --- Web Push 配信 ---
+async def _broadcast_push(message: str) -> None:
+    """登録済みの全 Web Push サブスクリプションに通知を送る。
+
+    アプリ起動中は SSE で proactive_notification が届くが、
+    アプリ完全終了 / ロック画面の時は OS 通知として届けるためにこちらが必要。
+    """
+    if not _HAS_WEBPUSH or not vapid_config or not subscriptions:
+        return
+
+    private_pem = vapid_config.get("private_pem")
+    if not private_pem:
+        return
+
+    payload = json.dumps({"title": "Notification", "body": message or ""}, ensure_ascii=False)
+    dead: list[dict] = []
+
+    def _send_one(sub: dict) -> None:
+        try:
+            webpush(
+                subscription_info=sub,
+                data=payload,
+                vapid_private_key=private_pem,
+                vapid_claims={"sub": VAPID_SUB},
+                ttl=60,
+            )
+        except WebPushException as e:
+            # 410 Gone / 404 → サブスクリプションが端末で破棄された、削除候補
+            resp = getattr(e, "response", None)
+            status = getattr(resp, "status_code", None)
+            if status in (404, 410):
+                dead.append(sub)
+            else:
+                logger.warning("webpush failed (status=%s): %s", status, e)
+        except Exception:
+            logger.exception("webpush send error")
+
+    # pywebpush は同期 API なので thread pool に逃がす
+    await asyncio.gather(*(asyncio.to_thread(_send_one, s) for s in list(subscriptions)))
+
+    if dead:
+        for d in dead:
+            try:
+                subscriptions.remove(d)
+            except ValueError:
+                pass
+        _save_subscriptions()
+
+
 # --- can_use_tool ハンドラ（エージェントごとにクロージャ） ---
 def _make_permission_handler(agent: str):
     async def handler(tool_name: str, input_data: dict, context: Any):
@@ -520,6 +610,8 @@ async def _run_sdk_background(agent: str, content: list):
                                         "tool_use_id": block.id,
                                     }, ensure_ascii=False) + "\n\n"
                                 )
+                                # アプリ閉じてる時のために Web Push でも配信
+                                asyncio.create_task(_broadcast_push(notif_msg))
 
             elif isinstance(msg, UserMessage):
                 is_subagent = msg.parent_tool_use_id is not None
@@ -834,6 +926,49 @@ async def anthropic_proxy(path: str, request: Request):
     )
 
 
+# --- Web Push エンドポイント ---
+@app.get("/push/vapid-public-key")
+def get_vapid_public_key():
+    if not vapid_config or not vapid_config.get("public_key"):
+        raise HTTPException(status_code=503, detail="VAPID not configured. Run gen_vapid.py.")
+    return {"public_key": vapid_config["public_key"]}
+
+
+def _sub_key(sub: dict) -> str | None:
+    """サブスクリプションのユニーク識別子 (endpoint URL)。"""
+    if not isinstance(sub, dict):
+        return None
+    return sub.get("endpoint")
+
+
+@app.post("/push/subscribe")
+def push_subscribe(subscription: dict = Body(...)):
+    key = _sub_key(subscription)
+    if not key:
+        raise HTTPException(status_code=400, detail="Invalid subscription (missing endpoint)")
+    # endpoint で重複排除
+    for i, s in enumerate(subscriptions):
+        if _sub_key(s) == key:
+            subscriptions[i] = subscription
+            break
+    else:
+        subscriptions.append(subscription)
+    _save_subscriptions()
+    return {"ok": True, "count": len(subscriptions)}
+
+
+@app.post("/push/unsubscribe")
+def push_unsubscribe(subscription: dict = Body(...)):
+    key = _sub_key(subscription)
+    if not key:
+        raise HTTPException(status_code=400, detail="Invalid subscription (missing endpoint)")
+    before = len(subscriptions)
+    subscriptions[:] = [s for s in subscriptions if _sub_key(s) != key]
+    if len(subscriptions) != before:
+        _save_subscriptions()
+    return {"ok": True, "count": len(subscriptions)}
+
+
 def _resolve_safe(path_str: str) -> Path:
     resolved = Path(path_str).expanduser().resolve()
     if not str(resolved).startswith(str(HOME)):
@@ -911,7 +1046,7 @@ class CacheControlledStaticFiles(StaticFiles):
     /assets/ 配下はファイル名にハッシュが入っているので永久キャッシュして問題ない。
     """
 
-    NO_CACHE_PATHS = {"index.html", "manifest.json"}
+    NO_CACHE_PATHS = {"index.html", "manifest.json", "sw.js"}
     IMMUTABLE_PREFIX = "assets/"
 
     async def get_response(self, path: str, scope):

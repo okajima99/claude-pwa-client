@@ -1,6 +1,8 @@
 config.json
 backend/config.json
 backend/sessions.json
+backend/vapid.json
+backend/subscriptions.json
 /.env
 frontend/public/manifest.json
 frontend/public/local-icons/
