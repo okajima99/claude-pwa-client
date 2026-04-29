@@ -345,7 +345,11 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKe
             </span>
           )}
           {msg.askUserQuestion && (
-            <AskUserQuestionBubble askUserQuestion={msg.askUserQuestion} onAnswer={onAnswer} />
+            <AskUserQuestionBubble
+              key={msg.askUserQuestion.tool_use_id}
+              askUserQuestion={msg.askUserQuestion}
+              onAnswer={onAnswer}
+            />
           )}
           <StopReasonChip meta={msg.meta} streaming={msg.streaming} />
           <MetaLine meta={msg.meta} streaming={msg.streaming} apiKeySource={apiKeySource} />

@@ -48,6 +48,7 @@ function AskUserQuestionBubble({ askUserQuestion, onAnswer }) {
     const trimmed = freeText.trim()
     if (!trimmed) return
     submit(trimmed)
+    setFreeText('')
   }
 
   return (
@@ -89,8 +90,15 @@ function AskUserQuestionBubble({ askUserQuestion, onAnswer }) {
           placeholder="自由記述で回答..."
           value={freeText}
           onChange={e => setFreeText(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') handleFreeSubmit() }}
+          onKeyDown={e => {
+            // IME 確定 Enter は無視（iOS / 日本語入力での誤送信防止）
+            if (e.key === 'Enter' && !e.nativeEvent.isComposing) handleFreeSubmit()
+          }}
           disabled={answered}
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
         />
         <button className="ask-free-send" onClick={handleFreeSubmit} disabled={answered || !freeText.trim()}>
           送信
