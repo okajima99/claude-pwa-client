@@ -224,9 +224,26 @@ function CompactBanner({ msg }) {
   )
 }
 
+// 自発通知 (PushNotification) 用の地味なシステムバブル。チャット流の中央に小さく挟む。
+function ProactiveBanner({ msg }) {
+  const time = msg.ts ? new Date(msg.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null
+  return (
+    <div className="message system proactive-banner">
+      <span className="proactive-line">
+        <span className="proactive-icon">🔔</span>
+        <span className="proactive-text">{msg.message}</span>
+        {time && <span className="proactive-time">{time}</span>}
+      </span>
+    </div>
+  )
+}
+
 const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKeySource }) {
   if (msg.role === 'system' && msg.kind === 'compact') {
     return <CompactBanner msg={msg} />
+  }
+  if (msg.role === 'system' && msg.kind === 'proactive') {
+    return <ProactiveBanner msg={msg} />
   }
   if (msg.role === '__loading__') {
     return (
