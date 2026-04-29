@@ -438,6 +438,13 @@ async def _broadcast_push(message: str, title: str | None = None) -> None:
     if not private_pem:
         return
 
+    # pywebpush の webpush() は内部で Vapid.from_string を呼ぶが、それは
+    # PEM ヘッダ/フッタを剥がした base64 部分しか受け付けない (1.9.4)。
+    # gen_vapid.py が PEM 形式で書き出している都合上、ここで抽出する。
+    private_b64 = "".join(
+        line for line in private_pem.splitlines() if not line.startswith("-----")
+    ).strip()
+
     payload = json.dumps({
         "title": title or NOTIFICATION_TITLE_DEFAULT,
         "body": message or "",
@@ -449,7 +456,7 @@ async def _broadcast_push(message: str, title: str | None = None) -> None:
             webpush(
                 subscription_info=sub,
                 data=payload,
-                vapid_private_key=private_pem,
+                vapid_private_key=private_b64,
                 vapid_claims={"sub": VAPID_SUB},
                 ttl=60,
             )
