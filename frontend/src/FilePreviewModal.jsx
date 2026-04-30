@@ -14,6 +14,7 @@ import markup from 'react-syntax-highlighter/dist/esm/languages/prism/markup'
 import yaml from 'react-syntax-highlighter/dist/esm/languages/prism/yaml'
 import toml from 'react-syntax-highlighter/dist/esm/languages/prism/toml'
 import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash'
+import { API_BASE } from './constants.js'
 
 SyntaxHighlighter.registerLanguage('python', python)
 SyntaxHighlighter.registerLanguage('javascript', javascript)
@@ -41,8 +42,6 @@ const EXT_TO_LANG = {
   toml: 'toml',
   sh: 'bash',
 }
-
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 
 const TEXT_EXTENSIONS = new Set([
   ...Object.keys(EXT_TO_LANG),

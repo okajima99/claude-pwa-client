@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
+import { API_BASE } from './constants.js'
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 const HOME = '~'
 
 export default function FileTreePanel({ onOpenFile, onClose, initialPath }) {
