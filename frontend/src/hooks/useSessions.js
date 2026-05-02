@@ -97,19 +97,15 @@ export function useSessions() {
     try {
       await fetch(`${API_BASE}/sessions/${id}`, { method: 'DELETE' })
     } catch { /* backend 未到達でもローカル状態は消す */ }
-    // setState はネストせず順番に呼ぶ。 React 18 のバッチングで 1 回の再描画にまとまる
-    let nextActive = null
-    setSessions(prev => {
-      const next = prev.filter(s => s.id !== id)
-      // 削除したのが active なら、 残りの先頭 (= 一番新しい) を選び直す
-      nextActive = (prev.find(s => s.id === id) && next.length > 0) ? next[0].id : null
-      return next
-    })
-    setActiveId(curActive => {
-      if (curActive !== id) return curActive
-      return nextActive
-    })
-  }, [])
+    // 現在の sessions / activeId を直接読んで外で計算する (updater 内に副作用を持たない)。
+    // React の StrictMode で updater が 2 回実行されても安全。
+    const wasActive = sessions.some(s => s.id === id) && activeId === id
+    const nextSessions = sessions.filter(s => s.id !== id)
+    setSessions(nextSessions)
+    if (wasActive) {
+      setActiveId(nextSessions.length > 0 ? nextSessions[0].id : null)
+    }
+  }, [sessions, activeId])
 
   const renameSession = useCallback(async (id, title) => {
     const trimmed = (title || '').trim()

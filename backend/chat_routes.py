@@ -138,7 +138,9 @@ async def delete_session(session_id: str):
         state.task.cancel()
         try:
             await state.task
-        except Exception:
+        except (Exception, asyncio.CancelledError):
+            # CancelledError は Python 3.8+ で BaseException 直系なので Exception では取れない。
+            # 並行 cleanup を継続するため明示的に握り潰す。
             pass
     # 一時ファイルをクリーンアップ
     for p in session_tmp_files.pop(session_id, []):
@@ -179,7 +181,9 @@ async def chat_stream(
         state.task.cancel()
         try:
             await state.task
-        except Exception:
+        except (Exception, asyncio.CancelledError):
+            # CancelledError は Python 3.8+ で BaseException 直系なので Exception では取れない。
+            # 並行 cleanup を継続するため明示的に握り潰す。
             pass
 
     if state.complete or state.task is None or state.task.done():
@@ -291,7 +295,9 @@ async def chat_stop(session_id: str):
     if state.task and not state.task.done():
         try:
             await state.task
-        except Exception:
+        except (Exception, asyncio.CancelledError):
+            # CancelledError は Python 3.8+ で BaseException 直系なので Exception では取れない。
+            # 並行 cleanup を継続するため明示的に握り潰す。
             pass
 
     # interrupt 後の SDK client は内部状態が壊れている可能性があり、再利用すると

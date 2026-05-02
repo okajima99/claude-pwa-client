@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 import http_client  # noqa: E402
 from config import UPLOADS_TMP  # noqa: E402
 from sdk_runner import disconnect_client, idle_disconnect_loop  # noqa: E402
-from session_logging import prune_all_existing  # noqa: E402
+from session_logging import close_all as close_all_session_logs, prune_all_existing  # noqa: E402
 from state import sessions_meta, stream_states  # noqa: E402
 
 import chat_routes  # noqa: E402
@@ -82,6 +82,7 @@ async def lifespan(app: FastAPI):
         pass
     for session_id in list(stream_states.keys()):
         await disconnect_client(session_id)
+    close_all_session_logs()
     await http_client.aclose()
 
 

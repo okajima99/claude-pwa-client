@@ -29,7 +29,7 @@ from claude_agent_sdk.types import PermissionResultAllow, PermissionResultDeny
 
 from config import AGENTS, CLAUDE_PATH
 from push import broadcast_push, notification_title_for
-from session_logging import session_log
+from session_logging import close_session_log, session_log
 from state import (
     agent_status,
     compute_ctx_pct,
@@ -206,16 +206,22 @@ async def ensure_client(session_id: str) -> ClaudeSDKClient:
 
 
 async def disconnect_client(session_id: str) -> None:
+    """SDK client を切断する。 race-safe: state.client = None を await の前に
+    確定させて、 切断中に来た新規 ensure_client が古い (closing) client を
+    返さないようにする。"""
     state = stream_states.get(session_id)
     if state is None:
         return
-    if state.client is not None:
-        try:
-            await state.client.disconnect()
-        except Exception:
-            logger.exception("disconnect failed for session=%s", session_id)
-        state.client = None
-        state.client_session_id = None
+    client = state.client
+    if client is None:
+        return
+    # 先に参照を切る (この時点で並行 ensure_client は新 client を立て直す)
+    state.client = None
+    state.client_session_id = None
+    try:
+        await client.disconnect()
+    except Exception:
+        logger.exception("disconnect failed for session=%s", session_id)
 
 
 # --- アイドル GC ---
@@ -252,9 +258,14 @@ async def idle_disconnect_loop():
                     session_id,
                     f"[idle-gc] disconnecting idle={idle:.0f}s",
                 )
-                await disconnect_client(session_id)
-                # 再接続用 buffer もここで捨てる (アイドル状態なので誰も replay しに来ない)
+                try:
+                    await disconnect_client(session_id)
+                except Exception:
+                    logger.exception("idle-gc disconnect failed for session=%s", session_id)
+                # disconnect の成否に関わらず buffer は捨てる (どうせ誰も replay に来ない)
                 state.buffer = []
+                # ログハンドルも閉じて fd を解放する。 次の発話で勝手に開き直される
+                close_session_log(session_id)
         except asyncio.CancelledError:
             raise
         except Exception:

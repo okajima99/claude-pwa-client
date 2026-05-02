@@ -32,6 +32,8 @@ export default function App() {
     () => sessions.find(s => s.id === activeId) || null,
     [sessions, activeId],
   )
+  // 全箇所共通の active セッション ID。 activeSession?.id を毎度書かない統一形。
+  const activeSid = activeSession?.id || null
 
   const { messages, setMessages, input, setInput } = useChatStorage(sessions)
   const { attachments, fileInputRef, handleFileSelect, removeAttachment, clearAttachments } = useAttachments(activeSession)
@@ -77,14 +79,10 @@ export default function App() {
     }
   }, [])
 
-  // activeSid を依存に入れたいが宣言は下の useMemo 解決後。 activeId (state) を使う。
-  // activeId と activeSid (= activeSession?.id) は通常一致するが、 削除直後の一瞬だけ
-  // activeId が古い ID を保持する可能性がある (useEffect で setActiveId が更新される前)。
-  // そのケースでは sendAnswer が 404 を返すが、 ハンドリング側で吸収される。
   const handleAnswer = useCallback((tool_use_id, answer) => {
-    if (!activeId) return
-    sendAnswer(activeId, tool_use_id, answer)
-  }, [sendAnswer, activeId])
+    if (!activeSid) return
+    sendAnswer(activeSid, tool_use_id, answer)
+  }, [sendAnswer, activeSid])
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -96,9 +94,6 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [menuOpen])
 
-  // 以降 active なセッションの id は activeSid 1 つに統一する。
-  // activeSession?.id を毎度書くと参照ブレが起きやすいので window 越し依存を避ける。
-  const activeSid = activeSession?.id || null
   const sids = useMemo(() => sessions.map(s => s.id), [sessions])
   const currentAttachments = (activeSid && attachments[activeSid]) || []
 
