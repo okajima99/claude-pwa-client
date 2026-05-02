@@ -30,9 +30,11 @@ export default function SessionDrawer({
 }) {
   const [agentPicker, setAgentPicker] = useState(false) // + ボタン押下後の agent 選択メニュー
   const [menuFor, setMenuFor] = useState(null)          // ⋯ メニュー出してる session_id
+  const [menuFlipUp, setMenuFlipUp] = useState(false)   // 画面下端なら上方向に展開
   const [renameFor, setRenameFor] = useState(null)      // リネーム inline 編集中の session_id
   const [renameValue, setRenameValue] = useState('')
   const renameInputRef = useRef(null)
+  const isLastSession = sessions.length <= 1
 
   useEffect(() => {
     if (renameFor && renameInputRef.current) {
@@ -150,7 +152,15 @@ export default function SessionDrawer({
                     className="drawer-item-menu"
                     onClick={(e) => {
                       e.stopPropagation()
-                      setMenuFor(isMenuOpen ? null : s.id)
+                      if (isMenuOpen) {
+                        setMenuFor(null)
+                        return
+                      }
+                      // 画面下端 (残り 140px 未満) なら上方向に展開する
+                      const rect = e.currentTarget.getBoundingClientRect()
+                      const spaceBelow = window.innerHeight - rect.bottom
+                      setMenuFlipUp(spaceBelow < 140)
+                      setMenuFor(s.id)
                     }}
                     aria-label="メニュー"
                   >
@@ -159,16 +169,22 @@ export default function SessionDrawer({
                 )}
 
                 {isMenuOpen && (
-                  <div className="drawer-item-popup" onClick={e => e.stopPropagation()}>
+                  <div
+                    className={`drawer-item-popup ${menuFlipUp ? 'flip-up' : ''}`}
+                    onClick={e => e.stopPropagation()}
+                  >
                     <button onClick={() => startRename(s.id, s.title)}>リネーム</button>
                     <button
                       className="danger"
+                      disabled={isLastSession}
                       onClick={() => {
+                        if (isLastSession) return
                         setMenuFor(null)
                         onDelete(s.id)
                       }}
+                      title={isLastSession ? '最後の 1 個は削除できません' : ''}
                     >
-                      削除
+                      {isLastSession ? '削除 (最後の 1 個)' : '削除'}
                     </button>
                   </div>
                 )}

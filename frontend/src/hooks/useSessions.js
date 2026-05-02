@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { API_BASE, LS_SESSIONS_META, LS_ACTIVE_SESSION, LS_LEGACY_ACTIVE_AGENT } from '../constants.js'
-
-// 旧 agent ID → 新 session_id (backend の session_meta.json と一致)
-const LEGACY_AGENT_TO_SESSION = {
-  agent_a: 'ses_legacy_a',
-  agent_b: 'ses_legacy_b',
-}
+import {
+  API_BASE,
+  LEGACY_AGENT_TO_SESSION,
+  LS_ACTIVE_SESSION,
+  LS_LEGACY_ACTIVE_AGENT,
+  LS_SESSIONS_META,
+} from '../constants.js'
 
 // セッション (= UI 上の 1 タブ = 1 議題) のリストと、 現在 active な session_id を管理する。
 // backend `/sessions` を真値とし、 起動時に GET でローカルの localStorage と同期する。
@@ -65,10 +65,10 @@ export function useSessions() {
     ]).then(([serverSessions, serverAgents]) => {
       if (Array.isArray(serverAgents)) setAgents(serverAgents)
       if (Array.isArray(serverSessions)) {
-        // 並び順: created_at 昇順 (作成順) で固定。 上から作成順に並ぶ
-        const sorted = [...serverSessions].sort((a, b) => (a.created_at || 0) - (b.created_at || 0))
+        // 並び順: created_at 降順 (新しい順) で固定。 ChatGPT と同じく新規作成が一番上
+        const sorted = [...serverSessions].sort((a, b) => (b.created_at || 0) - (a.created_at || 0))
         setSessions(sorted)
-        // active が backend に居ない or 未設定なら先頭に寄せる
+        // active が backend に居ない or 未設定なら先頭 (= 一番新しい) に寄せる
         setActiveId(prev => {
           if (prev && sorted.some(s => s.id === prev)) return prev
           return sorted.length > 0 ? sorted[0].id : null
@@ -80,14 +80,22 @@ export function useSessions() {
   const createSession = useCallback(async (agentId, title) => {
     const body = { agent_id: agentId }
     if (title) body.title = title
-    const res = await fetch(`${API_BASE}/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const meta = await res.json()
-    setSessions(prev => [...prev, meta])
+    let meta
+    try {
+      const res = await fetch(`${API_BASE}/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      meta = await res.json()
+    } catch (e) {
+      // backend 不到達 / エラー: UI に通知して終了 (ローカルだけ作ると整合性崩れる)
+      alert(`セッション作成に失敗しました: ${e?.message || e}`)
+      return null
+    }
+    // 新しい順で並べたいので先頭に挿す
+    setSessions(prev => [meta, ...prev])
     setActiveId(meta.id)
     return meta
   }, [])
@@ -96,14 +104,17 @@ export function useSessions() {
     try {
       await fetch(`${API_BASE}/sessions/${id}`, { method: 'DELETE' })
     } catch { /* backend 未到達でもローカル状態は消す */ }
+    // setState はネストせず順番に呼ぶ。 React 18 のバッチングで 1 回の再描画にまとまる
+    let nextActive = null
     setSessions(prev => {
       const next = prev.filter(s => s.id !== id)
-      // active を消した場合は別を選ぶ
-      setActiveId(curActive => {
-        if (curActive !== id) return curActive
-        return next.length > 0 ? next[0].id : null
-      })
+      // 削除したのが active なら、 残りの先頭 (= 一番新しい) を選び直す
+      nextActive = (prev.find(s => s.id === id) && next.length > 0) ? next[0].id : null
       return next
+    })
+    setActiveId(curActive => {
+      if (curActive !== id) return curActive
+      return nextActive
     })
   }, [])
 

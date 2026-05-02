@@ -13,3 +13,11 @@ export const LS_MESSAGES = 'cpc_messages'              // {session_id: [...]} (L
 export const LS_INPUT = 'cpc_input'                    // {session_id: 入力中文字列}
 // 旧キー (マイグレーション用)
 export const LS_LEGACY_ACTIVE_AGENT = 'cpc_active_agent'
+
+// 旧 agent ID → 新 session_id (backend の session_meta.json と一致)。
+// 起動時マイグレーションで cpc_messages / cpc_input / cpc_active_agent の旧キーを
+// 新 session_id にリネームするのに使う。
+export const LEGACY_AGENT_TO_SESSION = Object.freeze({
+  agent_a: 'ses_legacy_a',
+  agent_b: 'ses_legacy_b',
+})

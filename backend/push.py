@@ -119,12 +119,25 @@ def sanitize_notif_body(text: str) -> str:
     return _NOTIF_BODY_RE.sub(" ", text).strip()
 
 
+_NOTIF_TITLE_MAX = 32
+
+
+def _trim_title(title: str) -> str:
+    """iOS のロック画面通知タイトルは ~30 文字程度で切れるので 32 文字でカット。"""
+    if not title:
+        return title
+    if len(title) <= _NOTIF_TITLE_MAX:
+        return title
+    return title[: _NOTIF_TITLE_MAX - 1] + "…"
+
+
 def notification_title_for(session_id: str) -> str:
-    """通知タイトル: セッション title を最優先、 fallback で agent の notification_title。"""
+    """通知タイトル: セッション title を最優先、 fallback で agent の notification_title。
+    iOS のロック画面で見切れない長さに trim する。"""
     meta = sessions_meta.get(session_id)
     if meta:
         if meta.title:
-            return meta.title
+            return _trim_title(meta.title)
         cfg = AGENTS.get(meta.agent_id) or {}
         return cfg.get("notification_title") or NOTIFICATION_TITLE_DEFAULT
     return NOTIFICATION_TITLE_DEFAULT

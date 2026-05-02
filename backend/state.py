@@ -95,9 +95,27 @@ def _load_sessions_meta_and_claude_sessions() -> tuple[dict[str, SessionDef], di
                 id=sid, agent_id=aid, title=title, created_at=int(created)
             )
         if isinstance(sessions_raw, dict):
-            for sid in sessions_meta:
+            # 後方互換マップ: sessions.json が旧形式 (agent_id キー) のままだった場合、
+            # session_meta の各 entry の agent_id をキーに引いて claude session_id を救出する。
+            # 同 agent_id を持つ session_meta entry が 2 つ以上ある場合は最初の 1 つだけ拾う
+            # (重複は事実上発生しない、 マイグレーション直後のみ意味を持つ)。
+            legacy_consumed: set[str] = set()
+            for sid, meta in sessions_meta.items():
                 v = sessions_raw.get(sid)
-                claude_sessions[sid] = v if isinstance(v, str) else None
+                if isinstance(v, str):
+                    claude_sessions[sid] = v
+                    continue
+                aid = meta.agent_id
+                if aid in sessions_raw and aid not in legacy_consumed:
+                    legacy_v = sessions_raw.get(aid)
+                    if isinstance(legacy_v, str):
+                        claude_sessions[sid] = legacy_v
+                        legacy_consumed.add(aid)
+                        continue
+                claude_sessions[sid] = None
+            # 救出が走ったら新形式で書き戻す (次回以降の loader は通常パスで済む)
+            if legacy_consumed:
+                _persist_sessions(claude_sessions)
         else:
             for sid in sessions_meta:
                 claude_sessions[sid] = None

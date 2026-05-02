@@ -77,10 +77,14 @@ export default function App() {
     }
   }, [])
 
+  // activeSid を依存に入れたいが宣言は下の useMemo 解決後。 activeId (state) を使う。
+  // activeId と activeSid (= activeSession?.id) は通常一致するが、 削除直後の一瞬だけ
+  // activeId が古い ID を保持する可能性がある (useEffect で setActiveId が更新される前)。
+  // そのケースでは sendAnswer が 404 を返すが、 ハンドリング側で吸収される。
   const handleAnswer = useCallback((tool_use_id, answer) => {
-    if (!activeSession) return
-    sendAnswer(activeSession.id, tool_use_id, answer)
-  }, [sendAnswer, activeSession])
+    if (!activeId) return
+    sendAnswer(activeId, tool_use_id, answer)
+  }, [sendAnswer, activeId])
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -92,8 +96,11 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [menuOpen])
 
+  // 以降 active なセッションの id は activeSid 1 つに統一する。
+  // activeSession?.id を毎度書くと参照ブレが起きやすいので window 越し依存を避ける。
+  const activeSid = activeSession?.id || null
   const sids = useMemo(() => sessions.map(s => s.id), [sessions])
-  const currentAttachments = (activeSession && attachments[activeSession.id]) || []
+  const currentAttachments = (activeSid && attachments[activeSid]) || []
 
   // 非アクティブセッションの状態遷移を見て「新着」 フラグを立てる
   useEffect(() => {
@@ -122,7 +129,7 @@ export default function App() {
       let changed = false
       const next = { ...prev }
       for (const sid of sids) {
-        if (sid === activeSession?.id) {
+        if (sid === activeSid) {
           if (next[sid]) { next[sid] = false; changed = true }
         } else {
           const t = transitions[sid]
@@ -137,12 +144,12 @@ export default function App() {
       }
       return changed ? next : prev
     })
-  }, [messages, loading, activeSession, sids])
+  }, [messages, loading, activeSid, sids])
 
   const sessionBadges = useMemo(() => {
     const out = {}
     for (const sid of sids) {
-      if (sid === activeSession?.id) { out[sid] = null; continue }
+      if (sid === activeSid) { out[sid] = null; continue }
       const arr = messages[sid] || []
       const pending = arr.some(m => m.askUserQuestion && !m.askUserQuestion.answered)
       if (pending) { out[sid] = { kind: 'pending', label: '?' }; continue }
@@ -151,16 +158,16 @@ export default function App() {
       out[sid] = null
     }
     return out
-  }, [messages, loading, tabHasNew, activeSession, sids])
+  }, [messages, loading, tabHasNew, activeSid, sids])
 
   const displayMessages = useMemo(() => {
-    if (!activeSession) return []
-    const msgs = messages[activeSession.id] || []
-    if (loading[activeSession.id] && !msgs.some(m => m.streaming)) {
+    if (!activeSid) return []
+    const msgs = messages[activeSid] || []
+    if (loading[activeSid] && !msgs.some(m => m.streaming)) {
       return [...msgs, { id: '__loading__', role: '__loading__' }]
     }
     return msgs
-  }, [messages, loading, activeSession])
+  }, [messages, loading, activeSid])
 
   const handleEndSession = () => {
     setMenuOpen(false)
@@ -240,8 +247,7 @@ export default function App() {
     window.location.replace(u.toString())
   }
 
-  const activeSid = activeSession?.id
-  const inputDisabled = !activeSession || !!loading[activeSid]
+  const inputDisabled = !activeSid || !!loading[activeSid]
 
   return (
     <div className="app">

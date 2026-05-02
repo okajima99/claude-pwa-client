@@ -10,7 +10,6 @@ import { generateId } from '../../utils/id.js'
 //
 // 公開する ref:
 // - streamBufRef                 : 受信中の最新スナップショット (session_id → buf)
-// - currentBubbleHasToolsRef     : 直近バブルに tool_use を含めたか (バブル分割境界判定用)
 // - replayModeRef                : reconnect 中フラグ (バブル分割を抑止する)
 //
 // 公開関数:
@@ -25,7 +24,6 @@ function emptyBuf() {
 export function useStreamBuffer({ setMessages }) {
   const streamBufRef = useRef({})
   const rafIdRef = useRef({})
-  const currentBubbleHasToolsRef = useRef({})
   const replayModeRef = useRef({})
 
   const bufFor = (sid) => {
@@ -117,12 +115,10 @@ export function useStreamBuffer({ setMessages }) {
 
   const resetBuf = (sid) => {
     streamBufRef.current[sid] = emptyBuf()
-    currentBubbleHasToolsRef.current[sid] = false
   }
 
   return {
     streamBufRef,
-    currentBubbleHasToolsRef,
     replayModeRef,
     flushStreamBuf,
     scheduleFlush,

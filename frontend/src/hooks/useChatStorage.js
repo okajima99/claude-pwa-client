@@ -1,16 +1,9 @@
 import { useState, useRef, useEffect } from 'react'
 import LZString from 'lz-string'
-import { LS_MESSAGES, LS_INPUT, MAX_MESSAGES } from '../constants.js'
+import { LEGACY_AGENT_TO_SESSION, LS_MESSAGES, LS_INPUT, MAX_MESSAGES } from '../constants.js'
 import { generateId } from '../utils/id.js'
 
 const { compressToUTF16, decompressFromUTF16 } = LZString
-
-// 旧 agent ID → 新 session_id のマッピング (backend の session_meta.json と一致)。
-// 旧データを新 session_id 配下に引き継ぐためのマイグレーション用。
-const LEGACY_AGENT_TO_SESSION = {
-  agent_a: 'ses_legacy_a',
-  agent_b: 'ses_legacy_b',
-}
 
 function migrateLegacyKeys(obj) {
   if (!obj || typeof obj !== 'object') return obj
