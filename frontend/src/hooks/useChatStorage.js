@@ -5,19 +5,40 @@ import { generateId } from '../utils/id.js'
 
 const { compressToUTF16, decompressFromUTF16 } = LZString
 
-function migrateLegacyKeys(obj) {
+// 旧 agent_a / agent_b キーは「履歴を引き継がない方針」 になったので、 検出したら
+// そのまま削除する (引き継ぎはしない)。
+function dropLegacyKeys(obj) {
   if (!obj || typeof obj !== 'object') return obj
   const out = { ...obj }
-  for (const [legacyKey, newKey] of Object.entries(LEGACY_AGENT_TO_SESSION)) {
-    if (legacyKey in out) {
-      // 既に new key 側にもデータがある場合は new key を優先 (新 backend 由来)
-      if (!(newKey in out)) {
-        out[newKey] = out[legacyKey]
-      }
-      delete out[legacyKey]
-    }
+  for (const legacyKey of Object.keys(LEGACY_AGENT_TO_SESSION)) {
+    if (legacyKey in out) delete out[legacyKey]
   }
   return out
+}
+
+// 「セッション終了」 マーカー (= kind: 'session_end' の system メッセージ) を境界にして、
+// 「現在進行中の会話 + 直前に終了した 1 セッションぶん」 だけ残す。
+// マーカーが N 個以上あれば、 末尾から (KEEP_PREV_SESSIONS) 個目のマーカーより前を全部捨てる。
+const KEEP_PREV_SESSIONS = 1 // 「1 個前の終了済みセッション」 まで保持
+
+function pruneOldSessions(arr) {
+  if (!Array.isArray(arr) || arr.length === 0) return arr
+  // 末尾から走査して N+1 個目のマーカーの位置を探す (= そこ以前を捨てる)
+  // 例: KEEP_PREV_SESSIONS=1 なら、 末尾から 2 個目の session_end マーカーより前を捨てる
+  const targetMarkerIndex = KEEP_PREV_SESSIONS + 1
+  let found = 0
+  let cutAt = -1
+  for (let i = arr.length - 1; i >= 0; i--) {
+    if (arr[i]?.role === 'system' && arr[i]?.kind === 'session_end') {
+      found += 1
+      if (found === targetMarkerIndex) {
+        cutAt = i
+        break
+      }
+    }
+  }
+  if (cutAt < 0) return arr // マーカーがそこまで無い = まだ削るほど履歴が無い
+  return arr.slice(cutAt + 1)
 }
 
 // session_id をキーとして messages / input を localStorage と同期する。
@@ -30,14 +51,14 @@ export function useChatStorage(sessions) {
       if (raw) {
         const decompressed = decompressFromUTF16(raw)
         let parsed = decompressed ? JSON.parse(decompressed) : JSON.parse(raw)
-        // 旧 agent_a / agent_b キーがあれば ses_legacy_a / ses_legacy_b にリネーム
-        parsed = migrateLegacyKeys(parsed)
-        // ID なしメッセージへの ID 付与 (移行対応)
+        parsed = dropLegacyKeys(parsed)
+        // ID なしメッセージへの ID 付与 (移行対応) + ロード時にも prune を適用
         const result = {}
         if (parsed && typeof parsed === 'object') {
           for (const [sid, arr] of Object.entries(parsed)) {
             if (!Array.isArray(arr)) continue
-            result[sid] = arr.map(m => m.id ? m : { ...m, id: generateId() })
+            const withIds = arr.map(m => m.id ? m : { ...m, id: generateId() })
+            result[sid] = pruneOldSessions(withIds)
           }
         }
         return result
@@ -50,7 +71,7 @@ export function useChatStorage(sessions) {
     try {
       const saved = localStorage.getItem(LS_INPUT)
       if (saved) {
-        const parsed = migrateLegacyKeys(JSON.parse(saved))
+        const parsed = dropLegacyKeys(JSON.parse(saved))
         if (parsed && typeof parsed === 'object') return parsed
       }
     } catch { /* ignore */ }
@@ -82,14 +103,15 @@ export function useChatStorage(sessions) {
   const msgSaveTimer = useRef(null)
   const inputSaveTimer = useRef(null)
 
-  // messages を localStorage に書く時は、 現存セッションぶんだけに絞る
+  // messages を localStorage に書く時は、 現存セッションぶんだけに絞り、
+  // セッション終了マーカーを境界にして「現在 + 1 個前」 までに prune する。
   useEffect(() => {
     if (msgSaveTimer.current) clearTimeout(msgSaveTimer.current)
     msgSaveTimer.current = setTimeout(() => {
       const toSave = {}
       const sids = sessions.map(s => s.id)
       for (const sid of sids) {
-        const arr = messages[sid] || []
+        const arr = pruneOldSessions(messages[sid] || [])
         toSave[sid] = arr.slice(-MAX_MESSAGES)
       }
       // quota 超過時は古い方から 10% ずつ削って再試行 (画像で膨らんだ時の救済)

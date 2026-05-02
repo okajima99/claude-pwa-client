@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   API_BASE,
-  LEGACY_AGENT_TO_SESSION,
   LS_ACTIVE_SESSION,
   LS_LEGACY_ACTIVE_AGENT,
   LS_SESSIONS_META,
@@ -27,15 +26,9 @@ export function useSessions() {
     try {
       const id = localStorage.getItem(LS_ACTIVE_SESSION)
       if (id) return id
-      // 旧 cpc_active_agent からマイグレーション
-      const legacy = localStorage.getItem(LS_LEGACY_ACTIVE_AGENT)
-      if (legacy && legacy in LEGACY_AGENT_TO_SESSION) {
-        const migrated = LEGACY_AGENT_TO_SESSION[legacy]
-        try {
-          localStorage.setItem(LS_ACTIVE_SESSION, migrated)
-          localStorage.removeItem(LS_LEGACY_ACTIVE_AGENT)
-        } catch { /* ignore */ }
-        return migrated
+      // 旧 cpc_active_agent はもう移行しない方針。 残ってたら掃除だけする
+      if (localStorage.getItem(LS_LEGACY_ACTIVE_AGENT)) {
+        localStorage.removeItem(LS_LEGACY_ACTIVE_AGENT)
       }
     } catch { /* ignore */ }
     return null

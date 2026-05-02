@@ -29,6 +29,7 @@ from claude_agent_sdk.types import PermissionResultAllow, PermissionResultDeny
 
 from config import AGENTS, CLAUDE_PATH
 from push import broadcast_push, notification_title_for
+from session_logging import session_log
 from state import (
     agent_status,
     compute_ctx_pct,
@@ -43,17 +44,6 @@ from state import (
 )
 
 logger = logging.getLogger(__name__)
-
-# request_id 検証用デバッグログ (logs/request_id.log) を別ファイルに分ける。
-# main.py の basicConfig が ERROR レベルなので、INFO はここで個別に拾う。
-_req_log_path = __import__("pathlib").Path(__file__).parent.parent / "logs" / "request_id.log"
-_req_log_path.parent.mkdir(parents=True, exist_ok=True)
-_req_handler = logging.FileHandler(str(_req_log_path))
-_req_handler.setLevel(logging.INFO)
-_req_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
-logger.addHandler(_req_handler)
-logger.setLevel(logging.INFO)
-logger.propagate = False
 
 
 # --- SDK メッセージ → CLI stream-json 互換 dict ---
@@ -228,9 +218,54 @@ async def disconnect_client(session_id: str) -> None:
         state.client_session_id = None
 
 
+# --- アイドル GC ---
+# 直近のターン完了から IDLE_DISCONNECT_SEC 経過した SDK client を disconnect する。
+# claude API の prompt cache が 5 分 TTL なので、 同期間で切るのが妥当 (cache 切れた
+# client を保持してもメモリだけ食って効果は無い)。 buffer も同時にクリアして
+# F の問題 (再接続不要なバッファ残留) も解消する。
+IDLE_DISCONNECT_SEC = 5 * 60
+IDLE_GC_INTERVAL_SEC = 60
+
+
+async def idle_disconnect_loop():
+    """N 秒間隔で全セッションを巡回し、 アイドル時間が閾値超のものを disconnect する。"""
+    while True:
+        try:
+            await asyncio.sleep(IDLE_GC_INTERVAL_SEC)
+            now = time.time()
+            for session_id, state in list(stream_states.items()):
+                if state.client is None:
+                    continue
+                # 進行中ターン or pending question があればスキップ
+                if not state.complete:
+                    continue
+                if state.pending_question is not None and not state.pending_question.done():
+                    continue
+                # last_activity_at == 0.0 はまだ発話してないセッション (= 立ち上げ済みだが
+                # ターン未経験) → GC 対象にしない方が安全
+                if state.last_activity_at <= 0:
+                    continue
+                idle = now - state.last_activity_at
+                if idle < IDLE_DISCONNECT_SEC:
+                    continue
+                session_log(
+                    session_id,
+                    f"[idle-gc] disconnecting idle={idle:.0f}s",
+                )
+                await disconnect_client(session_id)
+                # 再接続用 buffer もここで捨てる (アイドル状態なので誰も replay しに来ない)
+                state.buffer = []
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("idle_disconnect_loop iteration failed")
+
+
 # --- バックグラウンドで SDK ストリームを読む ---
 async def run_sdk_background(session_id: str, content: list, user_request_id: str | None = None):
     state = stream_states[session_id]
+    # アイドル GC が「進行中ターンを誤って disconnect」 しないよう、 開始時に活動時刻を更新
+    state.last_activity_at = time.time()
     # ターンの所有者を識別する request_id。ユーザー起点ターンには user_request_id を、
     # 自発ターン (CronCreate / ScheduleWakeup でキューされたもの) には毎回別の
     # proactive_xxx を付与する。
@@ -258,9 +293,9 @@ async def run_sdk_background(session_id: str, content: list, user_request_id: st
 
     current_request_id = f"proactive_{_uuid.uuid4().hex[:8]}"
     user_turn_done = False
-    logger.info(
-        "[run_sdk] === START session=%s user_request_id=%s user_text=%r ===",
-        session_id, user_request_id, user_input_text[:80],
+    session_log(
+        session_id,
+        f"[run_sdk] === START user_request_id={user_request_id} user_text={user_input_text[:80]!r} ===",
     )
     try:
         client = await ensure_client(session_id)
@@ -293,13 +328,13 @@ async def run_sdk_background(session_id: str, content: list, user_request_id: st
             # ResultMessage 検出で proactive_id を更新 (turn 境界)
             wire["request_id"] = proactive_id_drain
             state.buffer.append("data: " + json.dumps(wire, ensure_ascii=False) + "\n\n")
-            logger.info(
-                "[drain] type=%s request_id=%s",
-                wire.get("type"), proactive_id_drain,
+            session_log(
+                session_id,
+                f"[drain] type={wire.get('type')} request_id={proactive_id_drain}",
             )
             if isinstance(msg, ResultMessage):
                 proactive_id_drain = f"proactive_{_uuid.uuid4().hex[:8]}"
-        logger.info("[drain] total=%d before query", drained_count)
+        session_log(session_id, f"[drain] total={drained_count} before query")
 
         # drain 後の最初のターン = ユーザーのターン。user_request_id でタグする。
         if user_request_id:
@@ -325,24 +360,24 @@ async def run_sdk_background(session_id: str, content: list, user_request_id: st
             if isinstance(msg, AssistantMessage):
                 _text_preview = "".join(b.text for b in msg.content if isinstance(b, TextBlock))[:80]
                 _tools = [b.name for b in msg.content if isinstance(b, ToolUseBlock)]
-                logger.info(
-                    "[msg] AssistantMessage stop_reason=%s parent_tool=%s text=%r tools=%s",
-                    msg.stop_reason, msg.parent_tool_use_id, _text_preview, _tools,
+                session_log(
+                    session_id,
+                    f"[msg] AssistantMessage stop_reason={msg.stop_reason} parent_tool={msg.parent_tool_use_id} text={_text_preview!r} tools={_tools}",
                 )
             elif isinstance(msg, ResultMessage):
-                logger.info(
-                    "[msg] ResultMessage subtype=%s is_error=%s session=%s num_turns=%s stop_reason=%s",
-                    msg.subtype, msg.is_error, msg.session_id, msg.num_turns, msg.stop_reason,
+                session_log(
+                    session_id,
+                    f"[msg] ResultMessage subtype={msg.subtype} is_error={msg.is_error} claude_session={msg.session_id} num_turns={msg.num_turns} stop_reason={msg.stop_reason}",
                 )
             elif isinstance(msg, UserMessage):
                 _text = _extract_user_text(msg.content)[:80]
                 _has_tr = isinstance(msg.content, list) and any(isinstance(b, ToolResultBlock) for b in msg.content)
-                logger.info(
-                    "[msg] UserMessage parent_tool=%s tool_result=%s text=%r",
-                    msg.parent_tool_use_id, _has_tr, _text,
+                session_log(
+                    session_id,
+                    f"[msg] UserMessage parent_tool={msg.parent_tool_use_id} tool_result={_has_tr} text={_text!r}",
                 )
             elif isinstance(msg, SystemMessage):
-                logger.info("[msg] SystemMessage subtype=%s", msg.subtype)
+                session_log(session_id, f"[msg] SystemMessage subtype={msg.subtype}")
 
             # --- ステータス更新（送出前に済ます） ---
             if isinstance(msg, AssistantMessage):
@@ -434,11 +469,10 @@ async def run_sdk_background(session_id: str, content: list, user_request_id: st
                 wire["request_id"] = current_request_id
                 state.buffer.append("data: " + json.dumps(wire, ensure_ascii=False) + "\n\n")
                 # 検証ログ: メッセージ種別 + request_id を 1 行で残す
-                logger.info(
-                    "[wire] type=%s request_id=%s%s",
-                    wire.get("type"),
-                    current_request_id,
-                    " (user-turn-end)" if (isinstance(msg, ResultMessage) and current_request_id == user_request_id) else "",
+                _suffix = " (user-turn-end)" if (isinstance(msg, ResultMessage) and current_request_id == user_request_id) else ""
+                session_log(
+                    session_id,
+                    f"[wire] type={wire.get('type')} request_id={current_request_id}{_suffix}",
                 )
 
             # ResultMessage 通過後はターン終了。次に来るメッセージは別ターン (自発)
@@ -450,16 +484,19 @@ async def run_sdk_background(session_id: str, content: list, user_request_id: st
                 current_request_id = f"proactive_{_uuid.uuid4().hex[:8]}"
 
     except asyncio.CancelledError:
-        logger.info("[run_sdk] CANCELLED session=%s user_request_id=%s", session_id, user_request_id)
+        session_log(session_id, f"[run_sdk] CANCELLED user_request_id={user_request_id}")
         raise
     except Exception:
         logger.exception("Error in run_sdk_background for session=%s", session_id)
+        session_log(session_id, f"[run_sdk] EXCEPTION user_request_id={user_request_id}")
     finally:
-        logger.info(
-            "[run_sdk] === END session=%s user_request_id=%s user_turn_done=%s ===",
-            session_id, user_request_id, user_turn_done,
+        session_log(
+            session_id,
+            f"[run_sdk] === END user_request_id={user_request_id} user_turn_done={user_turn_done} ===",
         )
         state.complete = True
+        # ターン完了時刻を活動時刻として記録 (アイドル GC の起点)
+        state.last_activity_at = time.time()
         reset_activity(session_id)
         # ターン中に蓄積した assistant text を必ずクリアする。
         # 例外 / interrupt / stop で ResultMessage を経由しなかった場合に

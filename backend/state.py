@@ -17,6 +17,7 @@ import 越しに mutate できる形にしている。
 """
 import asyncio
 import json
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -26,6 +27,14 @@ from pathlib import Path
 from claude_agent_sdk import ClaudeSDKClient
 
 from config import AGENTS
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    """tmp ファイルに書いて os.replace で差し替える atomic write。
+    書き込み途中に kill されても元ファイルは壊れない。 同一 FS 内のみ atomic。"""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content)
+    os.replace(tmp, path)
 
 # --- 永続化パス ---
 SESSIONS_PATH = Path(__file__).parent / "sessions.json"
@@ -80,8 +89,8 @@ def _load_sessions_meta_and_claude_sessions() -> tuple[dict[str, SessionDef], di
     sessions_meta: dict[str, SessionDef] = {}
     claude_sessions: dict[str, str | None] = {}
 
-    if meta_raw and isinstance(meta_raw, list):
-        # 通常パス: session_meta.json に従う
+    if isinstance(meta_raw, list):
+        # 通常パス: session_meta.json に従う (空配列でもこちらに通す = 0 セッション起動 OK)
         for entry in meta_raw:
             if not isinstance(entry, dict):
                 continue
@@ -143,17 +152,18 @@ def _load_sessions_meta_and_claude_sessions() -> tuple[dict[str, SessionDef], di
 
 
 def _persist_meta(meta: dict[str, SessionDef]) -> None:
-    SESSION_META_PATH.write_text(
+    atomic_write_text(
+        SESSION_META_PATH,
         json.dumps(
             [m.to_dict() for m in meta.values()],
             ensure_ascii=False,
             indent=2,
-        )
+        ),
     )
 
 
 def _persist_sessions(claude_sessions: dict[str, str | None]) -> None:
-    SESSIONS_PATH.write_text(json.dumps(claude_sessions, ensure_ascii=False))
+    atomic_write_text(SESSIONS_PATH, json.dumps(claude_sessions, ensure_ascii=False))
 
 
 def save_sessions_meta() -> None:
@@ -185,6 +195,9 @@ class StreamState:
     # 直近 POST が発行した user_request_id。wire イベントに付与してフロントが
     # 「ユーザー起点 ResultMessage」と「自発 ResultMessage」を区別できるようにする。
     user_request_id: str | None = None
+    # アイドル GC 用: 直近のターン活動時刻 (ターン開始 / 完了時に更新)。
+    # 0.0 = まだ一度も発話してない (= GC 対象にしない)
+    last_activity_at: float = 0.0
 
 
 def _make_agent_status(agent_id: str) -> dict:

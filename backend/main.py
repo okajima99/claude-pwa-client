@@ -32,8 +32,9 @@ logger = logging.getLogger(__name__)
 # --- アプリ内モジュール ---
 import http_client  # noqa: E402
 from config import UPLOADS_TMP  # noqa: E402
-from sdk_runner import disconnect_client  # noqa: E402
-from state import stream_states  # noqa: E402
+from sdk_runner import disconnect_client, idle_disconnect_loop  # noqa: E402
+from session_logging import prune_all_existing  # noqa: E402
+from state import sessions_meta, stream_states  # noqa: E402
 
 import chat_routes  # noqa: E402
 import files_routes  # noqa: E402
@@ -45,6 +46,10 @@ import push  # noqa: E402
 async def lifespan(app: FastAPI):
     # 起動: 共有 httpx クライアント初期化 + 古い tmp ファイル / 大きすぎるエラーログを掃除
     await http_client.init()
+
+    # アイドル GC: 一定時間発話のないセッションの SDK client を自動 disconnect する
+    import asyncio as _asyncio
+    idle_gc_task = _asyncio.create_task(idle_disconnect_loop())
 
     cutoff = time.time() - 24 * 3600
     if UPLOADS_TMP.exists():
@@ -60,9 +65,21 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass
 
+    # per-tab ログ: 既存セッションぶんの掃除を起動時に 1 回走らせる
+    # (セッション終了で都度 prune する設計だが、 取りこぼし対策として保険で実行)
+    try:
+        prune_all_existing(list(sessions_meta.keys()))
+    except Exception:
+        logger.exception("prune_all_existing failed")
+
     yield
 
-    # 終了: SDK クライアントを全て切断 + httpx を閉じる
+    # 終了: アイドル GC 停止 → SDK クライアントを全て切断 → httpx を閉じる
+    idle_gc_task.cancel()
+    try:
+        await idle_gc_task
+    except (Exception, BaseException):
+        pass
     for session_id in list(stream_states.keys()):
         await disconnect_client(session_id)
     await http_client.aclose()

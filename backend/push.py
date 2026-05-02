@@ -19,7 +19,7 @@ except ImportError:
     _HAS_WEBPUSH = False
 
 from config import AGENTS, NOTIFICATION_TITLE_DEFAULT, VAPID_SUB
-from state import flags, sessions_meta
+from state import atomic_write_text, flags, sessions_meta
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -58,7 +58,7 @@ def _load_subscriptions() -> list[dict]:
 
 
 def _save_subscriptions() -> None:
-    SUBSCRIPTIONS_PATH.write_text(json.dumps(subscriptions, indent=2))
+    atomic_write_text(SUBSCRIPTIONS_PATH, json.dumps(subscriptions, indent=2))
 
 
 vapid_config: dict | None = _load_vapid()

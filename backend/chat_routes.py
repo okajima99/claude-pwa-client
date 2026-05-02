@@ -28,6 +28,12 @@ from fastapi.responses import Response, StreamingResponse
 
 from config import AGENTS, SUPPORTED_IMAGE_TYPES, UPLOADS_TMP
 from sdk_runner import disconnect_client, run_sdk_background
+from session_logging import (
+    delete_session_log,
+    mark_session_end,
+    prune_session_log,
+    session_log,
+)
 from state import (
     agent_status,
     register_session,
@@ -43,17 +49,6 @@ from state import (
 )
 
 logger = logging.getLogger(__name__)
-
-# 検証用: chat_routes も request_id.log に POST 入口を記録する
-import pathlib as _pathlib
-_req_log_path = _pathlib.Path(__file__).parent.parent / "logs" / "request_id.log"
-_req_log_path.parent.mkdir(parents=True, exist_ok=True)
-_req_handler = logging.FileHandler(str(_req_log_path))
-_req_handler.setLevel(logging.INFO)
-_req_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
-logger.addHandler(_req_handler)
-logger.setLevel(logging.INFO)
-logger.propagate = False
 
 router = APIRouter()
 
@@ -151,6 +146,8 @@ async def delete_session(session_id: str):
             p.unlink(missing_ok=True)
         except Exception:
             pass
+    # per-tab ログを丸ごと削除
+    delete_session_log(session_id)
     unregister_session(session_id)
     return {"status": "ok", "session_id": session_id}
 
@@ -210,9 +207,9 @@ async def chat_stream(
         # ResultMessage 1 個に限定し、自発の Result でロックが外れないようにする。
         user_request_id = uuid.uuid4().hex[:12]
         state.user_request_id = user_request_id
-        logger.info(
-            "[POST /chat/stream] session=%s user_request_id=%s text=%r files=%d",
-            session_id, user_request_id, message[:80], len(saved_files),
+        session_log(
+            session_id,
+            f"[POST /chat/stream] user_request_id={user_request_id} text={message[:80]!r} files={len(saved_files)}",
         )
 
         state.buffer = []
@@ -328,6 +325,9 @@ async def end_session(session_id: str):
             p.unlink(missing_ok=True)
         except Exception:
             pass
+    # per-tab ログにセッション終了マーカーを書いて、 古いセッション分を prune
+    mark_session_end(session_id)
+    prune_session_log(session_id)
     return {"status": "ok", "session_id": session_id}
 
 

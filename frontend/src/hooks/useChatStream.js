@@ -254,7 +254,12 @@ export function useChatStream({
     await fetch(`${API_BASE}/sessions/${sid}/end`, { method: 'POST' })
     setMessages(prev => {
       const cur = prev[sid] || []
-      return { ...prev, [sid]: [...cur, { id: generateId(), role: 'system', text: '--- セッション終了 ---' }] }
+      // kind: 'session_end' を付けて prune ロジックの境界マーカーにする
+      const ended = [
+        ...cur,
+        { id: generateId(), role: 'system', kind: 'session_end', text: '--- セッション終了 ---' },
+      ]
+      return { ...prev, [sid]: ended }
     })
   }
 
