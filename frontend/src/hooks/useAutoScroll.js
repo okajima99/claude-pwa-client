@@ -1,17 +1,17 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 
-export function useAutoScroll({ messages, activeAgent }) {
+// session_id をキーにした「タブ切替時の最下部固定 + 新着追従」 自動スクロール。
+export function useAutoScroll({ messages, activeSession }) {
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const [hasNew, setHasNew] = useState(false)
   const isAtBottomRef = useRef(true)
   const scrollerDomRef = useRef(null)
   const scrollThrottleRef = useRef(0)
-  const msgLengthRef = useRef({ agent_a: 0, agent_b: 0 })
+  const msgLengthRef = useRef({})
   const programmaticScrollRef = useRef(false)
   const scrollEndTimerRef = useRef(null)
+  const sid = activeSession?.id
 
-  // スクロールは CSS `scroll-behavior: smooth` に委ねる。scrollTo() 経由で呼べば自動的にぬるっと動く
-  // onScrollはsmoothアニメ中も発火するので、programmaticScrollRefで一定時間ガードしてユーザー操作誤認を防ぐ
   const scrollToBottom = useCallback(() => {
     const el = scrollerDomRef.current
     if (!el) return
@@ -25,36 +25,35 @@ export function useAutoScroll({ messages, activeAgent }) {
     }, 600)
   }, [])
 
-  // 新着メッセージ時の自動スクロール（タブ切り替えは別のuseEffect）
+  // 新着メッセージ時の自動スクロール
   useEffect(() => {
-    const currentLen = messages[activeAgent].length
-    const prevLen = msgLengthRef.current[activeAgent]
-    msgLengthRef.current[activeAgent] = currentLen
+    if (!sid) return
+    const cur = messages[sid] || []
+    const currentLen = cur.length
+    const prevLen = msgLengthRef.current[sid] || 0
+    msgLengthRef.current[sid] = currentLen
 
     if (currentLen > prevLen) {
-      // 新規アイテム追加: 最下部にいれば追従、そうでなければ未読通知
       if (isAtBottomRef.current) {
         requestAnimationFrame(() => { requestAnimationFrame(() => { scrollToBottom() }) })
       } else {
         setHasNew(true)
       }
     } else if (isAtBottomRef.current) {
-      // ストリーミング中の内容更新（アイテム数変化なし）: CSS smoothで追従
       scrollToBottom()
     }
-  }, [messages, activeAgent, scrollToBottom])
+  }, [messages, sid, scrollToBottom])
 
-  // タブ切り替え時は常に最下部へ
+  // タブ切替時は常に最下部
   useEffect(() => {
+    if (!sid) return
     isAtBottomRef.current = true
     setShowScrollBtn(false)
     setHasNew(false)
-    msgLengthRef.current[activeAgent] = messages[activeAgent].length
+    msgLengthRef.current[sid] = (messages[sid] || []).length
 
     const el = scrollerDomRef.current
     if (!el) return
-    // 画像onload・markdownハイライト等で後から高さが増えるケースに備え、
-    // 500msの窓で scrollHeight 変化を追う（最下部にいる間だけ追従）
     let cancelled = false
     let lastHeight = -1
     const deadline = Date.now() + 500
@@ -70,9 +69,9 @@ export function useAutoScroll({ messages, activeAgent }) {
     requestAnimationFrame(tick)
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeAgent])
+  }, [sid])
 
-  // 画面回転時：最下部にいた場合は追従
+  // 画面回転時
   useEffect(() => {
     const onResize = () => {
       if (isAtBottomRef.current) scrollToBottom()
@@ -88,7 +87,6 @@ export function useAutoScroll({ messages, activeAgent }) {
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30
     isAtBottomRef.current = atBottom
     if (atBottom) setHasNew(false)
-    // setShowScrollBtnはre-renderを誘発するためthrottle（150ms）
     const now = Date.now()
     if (now - scrollThrottleRef.current >= 150) {
       scrollThrottleRef.current = now

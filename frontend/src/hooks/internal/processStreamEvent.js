@@ -5,59 +5,54 @@ import { MAX_MESSAGES } from '../../constants.js'
 // SSE イベント (1 行 JSON) を受け取って、buffer / messages state に反映する純粋関数。
 // 副作用は deps 経由で渡された setter / ref で行う (テスト時に差し替え可能)。
 //
+// 第 2 引数 `sid` = session_id (UI 上のタブ ID)。
+//
 // 扱うイベント種別:
+//   request_id          — backend が発行した user 起点 ID をフロントが保持
 //   system / init       — apiKeySource 取得
 //   system / compact_boundary — 会話圧縮の系統バナー
 //   result              — ターン完了 meta 埋め込み
 //   ask_user_question   — AskUserQuestion バブル
 //   user (tool_result)  — 既存 tool_use に結果を紐付ける
 //   assistant           — text / thinking / tool_use → buffer に積む
-export function processStreamEvent(deps, agent, event) {
+export function processStreamEvent(deps, sid, event) {
   const {
     setMessages,
     setApiKeySource,
     cancelAndFlush,
     scheduleFlush,
     streamBufRef,
-    currentBubbleHasToolsRef,
+    bufFor,
     replayModeRef,
     onUserRequestId,
     onResultMessage,
   } = deps
 
-  // request_id: SSE 先頭で backend が発行する ユーザー POST 起点 ID。
-  // 自発ターンの ResultMessage で送信ボタンが解放されないよう、フロントは
-  // この ID を保持し、result イベントの request_id と一致した時だけ loading を解放する。
   if (event.type === 'request_id') {
-    if (typeof onUserRequestId === 'function') onUserRequestId(agent, event.request_id)
+    if (typeof onUserRequestId === 'function') onUserRequestId(sid, event.request_id)
     return
   }
 
-  // system init: apiKeySource を取得（"none" なら subscription/OAuth 経路で課金ゼロ）
   if (event.type === 'system' && event.subtype === 'init') {
     if (event.apiKeySource) {
-      setApiKeySource(prev => ({ ...prev, [agent]: event.apiKeySource }))
+      setApiKeySource(prev => ({ ...prev, [sid]: event.apiKeySource }))
     }
     return
   }
 
-  // compact_boundary: 会話圧縮が走ったタイミング。メタ(trigger / pre/post tokens / 所要時間)を
-  // 独立した system バブルとして差し込む。事前イベントは SDK に無いため事後通知のみ。
+  // compact_boundary: 会話圧縮タイミング。 メタを system バブルとして差し込む。
   if (event.type === 'system' && event.subtype === 'compact_boundary') {
-    // 直近バブルを確定してから system 行を差し込む（RAF 待ちの tool_use が後から挿入されて
-    // 位置が逆転するのを防ぐ）
-    cancelAndFlush(agent)
+    cancelAndFlush(sid)
     const meta = event.compactMetadata || {}
     const uuid = event.uuid || null
     setMessages(prev => {
-      const msgs = prev[agent]
-      // reconnect 再生時の重複挿入を防ぐ
+      const msgs = prev[sid] || []
       if (uuid && msgs.some(m => m.role === 'system' && m.kind === 'compact' && m.uuid === uuid)) {
         return prev
       }
       return {
         ...prev,
-        [agent]: [...msgs, {
+        [sid]: [...msgs, {
           id: generateId(),
           role: 'system',
           kind: 'compact',
@@ -72,7 +67,7 @@ export function processStreamEvent(deps, agent, event) {
     return
   }
 
-  // result: 直近の agent バブルに meta（コスト・所要時間・ターン数・モデル・トークン・stop_reason）を埋め込む
+  // result: 直近 agent バブルに meta 埋め込み + 送信ボタン解放
   if (event.type === 'result') {
     const meta = {
       cost_usd: typeof event.total_cost_usd === 'number' ? event.total_cost_usd : null,
@@ -83,34 +78,30 @@ export function processStreamEvent(deps, agent, event) {
       stop_reason: typeof event.stop_reason === 'string' ? event.stop_reason : null,
       is_error: !!event.is_error,
     }
-    // バブルがまだバッファ内 (RAF 待ち) だと last?.role !== 'agent' で弾かれ meta が消える。
-    // 先にバッファを強制フラッシュしてから meta を attach する。
-    cancelAndFlush(agent)
+    cancelAndFlush(sid)
     setMessages(prev => {
-      const msgs = [...prev[agent]]
+      const cur = prev[sid] || []
+      const msgs = [...cur]
       const last = msgs[msgs.length - 1]
       if (last?.role !== 'agent') return prev
       msgs[msgs.length - 1] = { ...last, meta }
-      return { ...prev, [agent]: msgs }
+      return { ...prev, [sid]: msgs }
     })
-    // ユーザーターンの ResultMessage の場合だけ送信ボタンを解放する。
-    // 自発ターンの ResultMessage は request_id がマッチしないので無視 → ロック継続。
-    if (typeof onResultMessage === 'function') onResultMessage(agent, event.request_id)
+    if (typeof onResultMessage === 'function') onResultMessage(sid, event.request_id)
     return
   }
 
-  // AskUserQuestion: 直近の agent バブルに askUserQuestion を埋め込む（既存バブルがなければ新規）
+  // AskUserQuestion バブル
   if (event.type === 'ask_user_question') {
     const tool_use_id = event.tool_use_id
     const questions = event.input?.questions || []
-    // バブルがバッファ内だと既存判定に失敗し余計な空バブルが作られうる
-    cancelAndFlush(agent)
+    cancelAndFlush(sid)
     setMessages(prev => {
-      const msgs = [...prev[agent]]
+      const cur = prev[sid] || []
+      const msgs = [...cur]
       const last = msgs[msgs.length - 1]
       const aq = { tool_use_id, questions, answered: false, selectedAnswer: null }
       if (last?.role === 'agent') {
-        // 同じ tool_use_id が既に埋まっていたらスキップ（再 replay 時の冪等性）
         if (last.askUserQuestion?.tool_use_id === tool_use_id) return prev
         msgs[msgs.length - 1] = { ...last, askUserQuestion: aq }
       } else {
@@ -123,24 +114,20 @@ export function processStreamEvent(deps, agent, event) {
           streaming: true,
         })
       }
-      return { ...prev, [agent]: msgs }
+      return { ...prev, [sid]: msgs }
     })
     return
   }
 
-  // user イベントの tool_result を既存 tool に紐付ける
-  // サブエージェント内部の tool_result は表示しない
+  // user の tool_result を既存 tool_use に紐付ける
   if (event.type === 'user' && event.message?.content && !event.parent_tool_use_id) {
     const results = Array.isArray(event.message.content)
       ? event.message.content.filter(b => b?.type === 'tool_result')
       : []
     if (results.length === 0) return
-    // 直近の tool_use がまだバッファ内 (RAF 待ち) だと setMessages 側の tools に
-    // 存在せず id マッチに失敗して result が消える。先にバッファを強制フラッシュする。
-    cancelAndFlush(agent)
-    // 直近のバブルに含まれる tool に result を埋め込む（過去 walk）
+    cancelAndFlush(sid)
     setMessages(prev => {
-      const msgs = prev[agent]
+      const msgs = prev[sid] || []
       let mutated = false
       const updated = msgs.map(m => {
         if (m.role !== 'agent' || !m.tools?.length) return m
@@ -155,13 +142,12 @@ export function processStreamEvent(deps, agent, event) {
         mutated = true
         return { ...m, tools: newTools }
       })
-      return mutated ? { ...prev, [agent]: updated } : prev
+      return mutated ? { ...prev, [sid]: updated } : prev
     })
     return
   }
 
   if (event.type !== 'assistant' || !event.message?.content) return
-  // サブエージェント内部のイベントはバブル内に表示しない（ActivityBar の subagent チップで状態表示）
   if (event.parent_tool_use_id) return
 
   const textContent = event.message.content
@@ -172,35 +158,26 @@ export function processStreamEvent(deps, agent, event) {
     .filter(b => b.type === 'thinking')
     .map(b => b.thinking)
     .join('\n')
-  // Agent（サブエージェント）/AskUserQuestion/TodoWrite は ActivityBar or 専用UIで描画するため tool-log から除外
   const newTools = event.message.content
     .filter(b => b.type === 'tool_use' && b.name !== 'Agent' && b.name !== 'AskUserQuestion' && b.name !== 'TodoWrite')
     .map(b => formatTool(b))
-  // バブル分割判定はフィルタ前の全 tool_use 数を使う。
-  // フィルタで除外された tool (TodoWrite 等) を挟んだ後の text が前のテキストを上書きしてしまうバグの対策。
   const hasAnyToolUse = event.message.content.some(b => b.type === 'tool_use')
 
-  // AssistantMessage 単位で 1 bubble に揃える: 各 assistant event を独立した bubble
-  // として扱う。SDK が出した発話順序 (= ワイヤー順) をそのまま画面に並べて、bubble の
-  // 分割 / マージで誤って結合させない。reconnect 再生中は SSE の重複再生を避けるため
-  // 既存バブルへの積み増しに切り替える (分割するとリプレイで二重化する)。
-  const buf = streamBufRef.current[agent]
-  if (replayModeRef.current[agent]) {
+  // bufFor で lazy init (動的セッション対応)
+  const buf = bufFor ? bufFor(sid) : streamBufRef.current[sid]
+  if (replayModeRef.current[sid]) {
     if (textContent) buf.text = textContent
     if (thinkingContent) buf.thinking = thinkingContent
     if (newTools.length > 0) {
       buf.newTools = [...buf.newTools, ...newTools]
     }
   } else {
-    // 通常受信: この event の中身だけで bubble を組む。直前 bubble に内容が
-    // あれば flushStreamBuf 側が末尾追加、空 streaming placeholder なら埋める。
     buf.needsNewBubble = true
     buf.text = textContent
     buf.thinking = thinkingContent || null
     buf.newTools = newTools
   }
-  // hasAnyToolUse は旧 needsNewBubble 判定でしか使ってなかったので保持しない
   void hasAnyToolUse
   buf.dirty = true
-  scheduleFlush(agent)
+  scheduleFlush(sid)
 }

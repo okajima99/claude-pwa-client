@@ -1,18 +1,20 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { AGENTS, SUPPORTED_IMAGE_TYPES } from '../constants.js'
+import { SUPPORTED_IMAGE_TYPES } from '../constants.js'
 
-export function useAttachments(activeAgent) {
-  const [attachments, setAttachments] = useState({ agent_a: [], agent_b: [] })
+// セッション (session_id) ごとの添付ファイル状態。 dict は lazy 拡張する。
+export function useAttachments(activeSession) {
+  const [attachments, setAttachments] = useState({})
   const fileInputRef = useRef(null)
   const attachmentsRef = useRef(attachments)
 
   useEffect(() => { attachmentsRef.current = attachments }, [attachments])
 
-  // アンマウント時に未送信BlobURLを解放
+  // アンマウント時に未送信 BlobURL を解放 (全セッション分)
   useEffect(() => {
     return () => {
-      for (const agent of AGENTS) {
-        for (const item of attachmentsRef.current[agent]) {
+      const dict = attachmentsRef.current
+      for (const sid of Object.keys(dict)) {
+        for (const item of dict[sid] || []) {
           if (item.url) URL.revokeObjectURL(item.url)
         }
       }
@@ -20,30 +22,30 @@ export function useAttachments(activeAgent) {
   }, [])
 
   const handleFileSelect = (e) => {
-    const agent = activeAgent
+    const sid = activeSession?.id
+    if (!sid) return
     const newItems = Array.from(e.target.files || []).map(file => ({
       file,
       url: SUPPORTED_IMAGE_TYPES.includes(file.type) ? URL.createObjectURL(file) : null,
     }))
     setAttachments(prev => ({
       ...prev,
-      [agent]: [...prev[agent], ...newItems],
+      [sid]: [...(prev[sid] || []), ...newItems],
     }))
     e.target.value = ''
   }
 
-  const removeAttachment = (agent, index) => {
+  const removeAttachment = (sid, index) => {
     setAttachments(prev => {
-      const updated = [...prev[agent]]
-      const removed = updated.splice(index, 1)
+      const cur = [...(prev[sid] || [])]
+      const removed = cur.splice(index, 1)
       if (removed[0]?.url) URL.revokeObjectURL(removed[0].url)
-      return { ...prev, [agent]: updated }
+      return { ...prev, [sid]: cur }
     })
   }
 
-  // sendMessage の送信後リセット用（flushSync 内でも使える）
-  const clearAttachments = useCallback((agent) => {
-    setAttachments(prev => ({ ...prev, [agent]: [] }))
+  const clearAttachments = useCallback((sid) => {
+    setAttachments(prev => ({ ...prev, [sid]: [] }))
   }, [])
 
   return {

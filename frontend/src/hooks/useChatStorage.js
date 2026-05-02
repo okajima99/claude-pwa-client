@@ -1,60 +1,116 @@
 import { useState, useRef, useEffect } from 'react'
 import LZString from 'lz-string'
-import { AGENTS, MAX_MESSAGES } from '../constants.js'
+import { LS_MESSAGES, LS_INPUT, MAX_MESSAGES } from '../constants.js'
 import { generateId } from '../utils/id.js'
 
 const { compressToUTF16, decompressFromUTF16 } = LZString
 
-export function useChatStorage() {
+// 旧 agent ID → 新 session_id のマッピング (backend の session_meta.json と一致)。
+// 旧データを新 session_id 配下に引き継ぐためのマイグレーション用。
+const LEGACY_AGENT_TO_SESSION = {
+  agent_a: 'ses_legacy_a',
+  agent_b: 'ses_legacy_b',
+}
+
+function migrateLegacyKeys(obj) {
+  if (!obj || typeof obj !== 'object') return obj
+  const out = { ...obj }
+  for (const [legacyKey, newKey] of Object.entries(LEGACY_AGENT_TO_SESSION)) {
+    if (legacyKey in out) {
+      // 既に new key 側にもデータがある場合は new key を優先 (新 backend 由来)
+      if (!(newKey in out)) {
+        out[newKey] = out[legacyKey]
+      }
+      delete out[legacyKey]
+    }
+  }
+  return out
+}
+
+// session_id をキーとして messages / input を localStorage と同期する。
+// セッションが動的に増減するため、 dict は lazy init: 知らない session_id にアクセス
+// した側 (useChatStream など) は空配列 / 空文字列を期待してよい。
+export function useChatStorage(sessions) {
   const [messages, setMessages] = useState(() => {
     try {
-      const raw = localStorage.getItem('cpc_messages')
+      const raw = localStorage.getItem(LS_MESSAGES)
       if (raw) {
         const decompressed = decompressFromUTF16(raw)
-        const parsed = decompressed ? JSON.parse(decompressed) : JSON.parse(raw)
-        // IDがないメッセージに付与（移行対応）
+        let parsed = decompressed ? JSON.parse(decompressed) : JSON.parse(raw)
+        // 旧 agent_a / agent_b キーがあれば ses_legacy_a / ses_legacy_b にリネーム
+        parsed = migrateLegacyKeys(parsed)
+        // ID なしメッセージへの ID 付与 (移行対応)
         const result = {}
-        for (const agent of AGENTS) {
-          result[agent] = (parsed[agent] || []).map(m => m.id ? m : { ...m, id: generateId() })
+        if (parsed && typeof parsed === 'object') {
+          for (const [sid, arr] of Object.entries(parsed)) {
+            if (!Array.isArray(arr)) continue
+            result[sid] = arr.map(m => m.id ? m : { ...m, id: generateId() })
+          }
         }
         return result
       }
     } catch { /* ignored */ }
-    return { agent_a: [], agent_b: [] }
+    return {}
   })
 
   const [input, setInput] = useState(() => {
     try {
-      const saved = localStorage.getItem('cpc_input')
-      return saved ? JSON.parse(saved) : { agent_a: '', agent_b: '' }
-    } catch {
-      return { agent_a: '', agent_b: '' }
-    }
+      const saved = localStorage.getItem(LS_INPUT)
+      if (saved) {
+        const parsed = migrateLegacyKeys(JSON.parse(saved))
+        if (parsed && typeof parsed === 'object') return parsed
+      }
+    } catch { /* ignore */ }
+    return {}
   })
+
+  // sessions が変わったタイミングで、 知らない session_id 用の空エントリを補う
+  // (ない場合の `messages[sid]` アクセスを `[]` で安全に受けるため)
+  useEffect(() => {
+    setMessages(prev => {
+      let changed = false
+      const next = { ...prev }
+      for (const s of sessions) {
+        if (!(s.id in next)) { next[s.id] = []; changed = true }
+      }
+      // 削除されたセッションのキーは保持してもメモリ的に問題ない (永続化時に絞る)
+      return changed ? next : prev
+    })
+    setInput(prev => {
+      let changed = false
+      const next = { ...prev }
+      for (const s of sessions) {
+        if (!(s.id in next)) { next[s.id] = ''; changed = true }
+      }
+      return changed ? next : prev
+    })
+  }, [sessions])
 
   const msgSaveTimer = useRef(null)
   const inputSaveTimer = useRef(null)
 
+  // messages を localStorage に書く時は、 現存セッションぶんだけに絞る
   useEffect(() => {
     if (msgSaveTimer.current) clearTimeout(msgSaveTimer.current)
     msgSaveTimer.current = setTimeout(() => {
       const toSave = {}
-      for (const agent of AGENTS) {
-        toSave[agent] = messages[agent].slice(-MAX_MESSAGES)
+      const sids = sessions.map(s => s.id)
+      for (const sid of sids) {
+        const arr = messages[sid] || []
+        toSave[sid] = arr.slice(-MAX_MESSAGES)
       }
-      // quota 超過時は古い方から10%ずつ削って再試行（画像で膨らんだ時の救済）
-      // 画面のstateは触らず、保存分だけ容量に収める
+      // quota 超過時は古い方から 10% ずつ削って再試行 (画像で膨らんだ時の救済)
       for (let attempt = 0; attempt < 10; attempt++) {
         try {
-          localStorage.setItem('cpc_messages', compressToUTF16(JSON.stringify(toSave)))
+          localStorage.setItem(LS_MESSAGES, compressToUTF16(JSON.stringify(toSave)))
           return
         } catch {
           let reduced = false
-          for (const agent of AGENTS) {
-            const arr = toSave[agent]
-            if (arr.length === 0) continue
+          for (const sid of sids) {
+            const arr = toSave[sid]
+            if (!arr || arr.length === 0) continue
             const cut = Math.max(1, Math.floor(arr.length * 0.1))
-            toSave[agent] = arr.slice(cut)
+            toSave[sid] = arr.slice(cut)
             reduced = true
           }
           if (!reduced) return
@@ -62,14 +118,18 @@ export function useChatStorage() {
       }
       console.warn('[chat-storage] quota exceeded after retries')
     }, 1000)
-  }, [messages])
+  }, [messages, sessions])
 
   useEffect(() => {
     if (inputSaveTimer.current) clearTimeout(inputSaveTimer.current)
     inputSaveTimer.current = setTimeout(() => {
-      localStorage.setItem('cpc_input', JSON.stringify(input))
+      const toSave = {}
+      for (const s of sessions) {
+        toSave[s.id] = input[s.id] || ''
+      }
+      try { localStorage.setItem(LS_INPUT, JSON.stringify(toSave)) } catch { /* ignore */ }
     }, 500)
-  }, [input])
+  }, [input, sessions])
 
   return { messages, setMessages, input, setInput }
 }

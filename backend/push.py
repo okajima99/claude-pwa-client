@@ -19,7 +19,7 @@ except ImportError:
     _HAS_WEBPUSH = False
 
 from config import AGENTS, NOTIFICATION_TITLE_DEFAULT, VAPID_SUB
-from state import flags
+from state import flags, sessions_meta
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -69,6 +69,13 @@ _NOTIF_BODY_RE = re.compile(r"\s+")
 # Markdown 記号 strip 用 (Web Push 通知はリッチテキストを描画できないので
 # `#` `**bold**` などの記号がそのまま見えてしまう。読みやすさを優先して記号を消す)
 _MD_FENCE_RE = re.compile(r"```(?:\w+)?\n?(.*?)```", re.DOTALL)
+# 表セパレータ行 (`|---|---|` `| :--- | ---: |` 等) は意味を持たないので削除
+_MD_TABLE_SEP_RE = re.compile(
+    r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$",
+    re.MULTILINE,
+)
+# 表行 `| a | b | c |` をセル分かち書き `a / b / c` に変換
+_MD_TABLE_ROW_RE = re.compile(r"^\s*\|(.*)\|\s*$", re.MULTILINE)
 _MD_PATTERNS = [
     (re.compile(r"^#{1,6}\s+", re.MULTILINE), ""),       # 見出し記号
     (re.compile(r"\*\*([^*]+)\*\*"), r"\1"),               # bold
@@ -82,11 +89,21 @@ _MD_PATTERNS = [
 ]
 
 
+def _table_row_to_inline(m: re.Match) -> str:
+    inner = m.group(1)
+    cells = [c.strip() for c in inner.split("|")]
+    cells = [c for c in cells if c]
+    return " / ".join(cells)
+
+
 def strip_markdown(text: str) -> str:
     """Markdown 記号を取り除いて素のテキストに近づける (loss-y、通知 body 用)。"""
     if not text:
         return text
     text = _MD_FENCE_RE.sub(lambda m: m.group(1), text)
+    # 表対応はパターン適用前に: セパレータ行を消し、 残った行をセル分かち書きへ
+    text = _MD_TABLE_SEP_RE.sub("", text)
+    text = _MD_TABLE_ROW_RE.sub(_table_row_to_inline, text)
     for pattern, repl in _MD_PATTERNS:
         text = pattern.sub(repl, text)
     return text
@@ -102,9 +119,15 @@ def sanitize_notif_body(text: str) -> str:
     return _NOTIF_BODY_RE.sub(" ", text).strip()
 
 
-def notification_title_for(agent: str) -> str:
-    cfg = AGENTS.get(agent) or {}
-    return cfg.get("notification_title") or NOTIFICATION_TITLE_DEFAULT
+def notification_title_for(session_id: str) -> str:
+    """通知タイトル: セッション title を最優先、 fallback で agent の notification_title。"""
+    meta = sessions_meta.get(session_id)
+    if meta:
+        if meta.title:
+            return meta.title
+        cfg = AGENTS.get(meta.agent_id) or {}
+        return cfg.get("notification_title") or NOTIFICATION_TITLE_DEFAULT
+    return NOTIFICATION_TITLE_DEFAULT
 
 
 async def broadcast_push(message: str, title: str | None = None) -> None:

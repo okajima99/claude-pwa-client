@@ -147,12 +147,12 @@ def serialize_sdk_message(msg: Any) -> dict | None:
 
 
 # --- can_use_tool ハンドラ ---
-def make_permission_handler(agent: str):
+def make_permission_handler(session_id: str):
     async def handler(tool_name: str, input_data: dict, context: Any):
         if tool_name != "AskUserQuestion":
             return PermissionResultAllow(updated_input=input_data)
 
-        state = stream_states[agent]
+        state = stream_states[session_id]
         if state.pending_question is not None and not state.pending_question.done():
             state.pending_question.cancel()
 
@@ -187,21 +187,22 @@ def make_permission_handler(agent: str):
 
 
 # --- SDK クライアントの生成/接続 ---
-async def ensure_client(agent: str) -> ClaudeSDKClient:
-    state = stream_states[agent]
+async def ensure_client(session_id: str) -> ClaudeSDKClient:
+    state = stream_states[session_id]
     if state.client is not None:
         return state.client
 
-    cfg = AGENTS[agent]
+    agent_id = state.agent_id
+    cfg = AGENTS[agent_id]
     env = {
         "ANTHROPIC_BASE_URL": "http://localhost:8000/proxy",
         "CLAUDE_CODE_EFFORT_LEVEL": "medium",
     }
     options = ClaudeAgentOptions(
         cwd=cfg["cwd"],
-        resume=sessions[agent],
+        resume=sessions.get(session_id),
         setting_sources=["user", "project", "local"],
-        can_use_tool=make_permission_handler(agent),
+        can_use_tool=make_permission_handler(session_id),
         allowed_tools=[],  # 空 = 全許可（can_use_tool は AskUserQuestion だけ介入）
         permission_mode="bypassPermissions",
         env=env,
@@ -210,24 +211,26 @@ async def ensure_client(agent: str) -> ClaudeSDKClient:
     client = ClaudeSDKClient(options=options)
     await client.connect()
     state.client = client
-    state.client_session_id = sessions[agent]
+    state.client_session_id = sessions.get(session_id)
     return client
 
 
-async def disconnect_client(agent: str) -> None:
-    state = stream_states[agent]
+async def disconnect_client(session_id: str) -> None:
+    state = stream_states.get(session_id)
+    if state is None:
+        return
     if state.client is not None:
         try:
             await state.client.disconnect()
         except Exception:
-            logger.exception("disconnect failed for agent=%s", agent)
+            logger.exception("disconnect failed for session=%s", session_id)
         state.client = None
         state.client_session_id = None
 
 
 # --- バックグラウンドで SDK ストリームを読む ---
-async def run_sdk_background(agent: str, content: list, user_request_id: str | None = None):
-    state = stream_states[agent]
+async def run_sdk_background(session_id: str, content: list, user_request_id: str | None = None):
+    state = stream_states[session_id]
     # ターンの所有者を識別する request_id。ユーザー起点ターンには user_request_id を、
     # 自発ターン (CronCreate / ScheduleWakeup でキューされたもの) には毎回別の
     # proactive_xxx を付与する。
@@ -256,11 +259,11 @@ async def run_sdk_background(agent: str, content: list, user_request_id: str | N
     current_request_id = f"proactive_{_uuid.uuid4().hex[:8]}"
     user_turn_done = False
     logger.info(
-        "[run_sdk] === START agent=%s user_request_id=%s user_text=%r ===",
-        agent, user_request_id, user_input_text[:80],
+        "[run_sdk] === START session=%s user_request_id=%s user_text=%r ===",
+        session_id, user_request_id, user_input_text[:80],
     )
     try:
-        client = await ensure_client(agent)
+        client = await ensure_client(session_id)
 
         # ---- 過去ターン応答の非ブロッキング drain ----
         # SDK の _message_receive に wakeup / Monitor 由来の応答が溜まっている可能性がある
@@ -347,12 +350,12 @@ async def run_sdk_background(agent: str, content: list, user_request_id: str | N
                 # サブエージェントは親とは別コンテキストで走るので ctx_pct を汚染させない
                 if msg.usage and not is_subagent:
                     last_assistant_usage = msg.usage
-                    ctx_window = agent_status[agent].get("ctx_window") or 1_000_000
-                    agent_status[agent]["ctx_pct"] = compute_ctx_pct(msg.usage, ctx_window)
+                    ctx_window = agent_status[session_id].get("ctx_window") or 1_000_000
+                    agent_status[session_id]["ctx_pct"] = compute_ctx_pct(msg.usage, ctx_window)
                 if not is_subagent:
                     for block in msg.content:
                         if isinstance(block, ToolUseBlock):
-                            agent_status[agent]["current_tool"] = {
+                            agent_status[session_id]["current_tool"] = {
                                 "name": block.name,
                                 "id": block.id,
                                 "started_at": time.time(),
@@ -360,63 +363,63 @@ async def run_sdk_background(agent: str, content: list, user_request_id: str | N
                             if block.name == "TodoWrite":
                                 todos = block.input.get("todos")
                                 if todos is not None:
-                                    agent_status[agent]["todos"] = todos
+                                    agent_status[session_id]["todos"] = todos
                             elif block.name == "ExitPlanMode":
-                                agent_status[agent]["plan_mode"] = False
+                                agent_status[session_id]["plan_mode"] = False
                     # ターン完了通知のために assistant text を蓄積する。
                     # 各 AssistantMessage は完結した発話単位 (tool_use を挟むと
                     # 1 ターン内に複数飛んでくる) なので、最後の text を保持して
                     # 「仕上げの返信」を通知 body にする。
                     text_parts = [b.text for b in msg.content if isinstance(b, TextBlock)]
                     if text_parts:
-                        last_assistant_text[agent] = "\n".join(text_parts)
+                        last_assistant_text[session_id] = "\n".join(text_parts)
 
             elif isinstance(msg, UserMessage):
                 is_subagent = msg.parent_tool_use_id is not None
                 if not is_subagent and isinstance(msg.content, list):
                     for block in msg.content:
                         if isinstance(block, ToolResultBlock):
-                            cur = agent_status[agent].get("current_tool")
+                            cur = agent_status[session_id].get("current_tool")
                             if cur and cur.get("id") == block.tool_use_id:
-                                agent_status[agent]["current_tool"] = None
+                                agent_status[session_id]["current_tool"] = None
 
             elif isinstance(msg, SystemMessage):
                 sub = msg.subtype
                 if sub == "init":
                     perm = msg.data.get("permissionMode")
-                    agent_status[agent]["plan_mode"] = (perm == "plan")
+                    agent_status[session_id]["plan_mode"] = (perm == "plan")
                 elif sub == "task_started":
-                    agent_status[agent]["subagent"] = {
+                    agent_status[session_id]["subagent"] = {
                         "description": msg.data.get("description", "") or getattr(msg, "description", ""),
                         "last_tool": "",
                         "task_id": msg.data.get("task_id", "") or getattr(msg, "task_id", ""),
                     }
                 elif sub == "task_progress":
-                    cur = agent_status[agent].get("subagent")
+                    cur = agent_status[session_id].get("subagent")
                     task_id = msg.data.get("task_id", "") or getattr(msg, "task_id", "")
                     if cur and cur.get("task_id") == task_id:
                         last_tool = msg.data.get("last_tool_name") or getattr(msg, "last_tool_name", None)
                         if last_tool:
                             cur["last_tool"] = last_tool
                 elif sub == "task_notification":
-                    cur = agent_status[agent].get("subagent")
+                    cur = agent_status[session_id].get("subagent")
                     task_id = msg.data.get("task_id", "") or getattr(msg, "task_id", "")
                     if cur and cur.get("task_id") == task_id:
-                        agent_status[agent]["subagent"] = None
+                        agent_status[session_id]["subagent"] = None
 
             elif isinstance(msg, ResultMessage):
                 if msg.session_id:
-                    sessions[agent] = msg.session_id
+                    sessions[session_id] = msg.session_id
                     save_sessions()
                     state.client_session_id = msg.session_id
-                update_agent_from_result(agent, msg.model_usage, last_assistant_usage)
+                update_agent_from_result(session_id, msg.model_usage, last_assistant_usage)
 
                 # ターン完了通知: PWA をフォアで見ていない時のみ Web Push で届ける。
                 # 直前ターンの assistant text を冒頭 140 文字に切って body に。
-                turn_text = last_assistant_text.get(agent, "").strip()
+                turn_text = last_assistant_text.get(session_id, "").strip()
                 if turn_text and not flags["user_visible"]:
                     body = turn_text if len(turn_text) <= 140 else (turn_text[:140] + "…")
-                    asyncio.create_task(broadcast_push(body, notification_title_for(agent)))
+                    asyncio.create_task(broadcast_push(body, notification_title_for(session_id)))
 
             elif isinstance(msg, RateLimitEvent):
                 info = msg.rate_limit_info
@@ -447,21 +450,21 @@ async def run_sdk_background(agent: str, content: list, user_request_id: str | N
                 current_request_id = f"proactive_{_uuid.uuid4().hex[:8]}"
 
     except asyncio.CancelledError:
-        logger.info("[run_sdk] CANCELLED agent=%s user_request_id=%s", agent, user_request_id)
+        logger.info("[run_sdk] CANCELLED session=%s user_request_id=%s", session_id, user_request_id)
         raise
     except Exception:
-        logger.exception("Error in run_sdk_background for agent=%s", agent)
+        logger.exception("Error in run_sdk_background for session=%s", session_id)
     finally:
         logger.info(
-            "[run_sdk] === END agent=%s user_request_id=%s user_turn_done=%s ===",
-            agent, user_request_id, user_turn_done,
+            "[run_sdk] === END session=%s user_request_id=%s user_turn_done=%s ===",
+            session_id, user_request_id, user_turn_done,
         )
         state.complete = True
-        reset_activity(agent)
+        reset_activity(session_id)
         # ターン中に蓄積した assistant text を必ずクリアする。
         # 例外 / interrupt / stop で ResultMessage を経由しなかった場合に
         # 古い text が次ターンの通知 body に混入するのを防ぐ。
-        last_assistant_text[agent] = ""
+        last_assistant_text[session_id] = ""
         # 回答待ちが残っていたらキャンセル
         if state.pending_question is not None and not state.pending_question.done():
             state.pending_question.cancel()

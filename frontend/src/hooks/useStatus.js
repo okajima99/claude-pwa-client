@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import { API_BASE } from '../constants.js'
 
-// ポーリング間隔: streaming中やアクティビティあり時は短く、idle時は長く
 const INTERVAL_BUSY = 2000
 const INTERVAL_IDLE = 30000
 
@@ -9,12 +8,14 @@ function isBusy(s) {
   return !!(s && (s.streaming || s.plan_mode || s.current_tool || s.subagent))
 }
 
-export function useStatus(activeAgent) {
+// 現在 active なセッションの status を polling する。
+export function useStatus(activeSession) {
   const [status, setStatus] = useState(null)
 
   useEffect(() => {
     let cancelled = false
     let timerId = null
+    const sid = activeSession?.id
 
     const schedule = (ms) => {
       if (cancelled) return
@@ -23,9 +24,10 @@ export function useStatus(activeAgent) {
 
     const tick = async () => {
       if (cancelled) return
+      if (!sid) { setStatus(null); return }
       if (document.hidden) { schedule(INTERVAL_IDLE); return }
       try {
-        const res = await fetch(`${API_BASE}/status/${activeAgent}`)
+        const res = await fetch(`${API_BASE}/status/${sid}`)
         if (res.ok) {
           const data = await res.json()
           if (!cancelled) setStatus(data)
@@ -38,7 +40,7 @@ export function useStatus(activeAgent) {
 
     tick()
     return () => { cancelled = true; if (timerId) clearTimeout(timerId) }
-  }, [activeAgent])
+  }, [activeSession?.id])
 
   return status
 }

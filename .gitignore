@@ -1,6 +1,8 @@
 config.json
 backend/config.json
 backend/sessions.json
+backend/sessions.json.bak
+backend/session_meta.json
 backend/vapid.json
 backend/subscriptions.json
 /.env

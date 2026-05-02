@@ -1,41 +1,41 @@
 import { useRef } from 'react'
-import { AGENTS } from '../../constants.js'
 import { generateId } from '../../utils/id.js'
 
 // SSE で飛んでくる細切れの assistant 更新 (text / thinking / tool_use) を、
 // rAF で 1 フレームに 1 回だけ React state にコミットするためのバッファ。
 // SDK は数十 ms 周期で更新を投げるので、setState を毎回呼ぶと再描画が詰まる。
 //
+// セッションごとに独立した buffer を持つ。 セッション (= session_id) は動的に
+// 増減するので、 `bufFor(sid)` で lazy 初期化する。
+//
 // 公開する ref:
-// - streamBufRef                 : 受信中の最新スナップショット
+// - streamBufRef                 : 受信中の最新スナップショット (session_id → buf)
 // - currentBubbleHasToolsRef     : 直近バブルに tool_use を含めたか (バブル分割境界判定用)
 // - replayModeRef                : reconnect 中フラグ (バブル分割を抑止する)
 //
 // 公開関数:
-// - flushStreamBuf(agent)        : バッファを setState に反映
-// - scheduleFlush(agent)         : rAF で 1 回だけ flush を予約
-// - cancelAndFlush(agent)        : 予約をキャンセルして即 flush
-// - resetBuf(agent)              : 新規ターン / reconnect 開始時の初期化
-function makeEmptyBufs() {
-  return Object.fromEntries(
-    AGENTS.map(a => [a, { text: null, thinking: null, newTools: [], needsNewBubble: false, dirty: false }])
-  )
-}
-function makePerAgent(value) {
-  return Object.fromEntries(AGENTS.map(a => [a, value]))
+// - flushStreamBuf(sid)        : バッファを setState に反映
+// - scheduleFlush(sid)         : rAF で 1 回だけ flush を予約
+// - cancelAndFlush(sid)        : 予約をキャンセルして即 flush
+// - resetBuf(sid)              : 新規ターン / reconnect 開始時の初期化
+function emptyBuf() {
+  return { text: null, thinking: null, newTools: [], needsNewBubble: false, dirty: false }
 }
 
 export function useStreamBuffer({ setMessages }) {
-  // useRef の引数は初回のみ使われる。毎レンダーで初期化関数が呼ばれるが
-  // AGENTS は 2 件なのでオーバーヘッドは無視できる。
-  const streamBufRef = useRef(makeEmptyBufs())
-  const rafIdRef = useRef(makePerAgent(null))
-  const currentBubbleHasToolsRef = useRef(makePerAgent(false))
-  const replayModeRef = useRef(makePerAgent(false))
+  const streamBufRef = useRef({})
+  const rafIdRef = useRef({})
+  const currentBubbleHasToolsRef = useRef({})
+  const replayModeRef = useRef({})
 
-  const flushStreamBuf = (agent) => {
-    const buf = streamBufRef.current[agent]
-    if (!buf.dirty) return
+  const bufFor = (sid) => {
+    if (!streamBufRef.current[sid]) streamBufRef.current[sid] = emptyBuf()
+    return streamBufRef.current[sid]
+  }
+
+  const flushStreamBuf = (sid) => {
+    const buf = streamBufRef.current[sid]
+    if (!buf || !buf.dirty) return
 
     const snap = {
       text: buf.text,
@@ -50,7 +50,8 @@ export function useStreamBuffer({ setMessages }) {
     buf.dirty = false
 
     setMessages(prev => {
-      const msgs = [...prev[agent]]
+      const cur = prev[sid] || []
+      const msgs = [...cur]
       const last = msgs[msgs.length - 1]
       const lastIsEmptyAgent = last
         && last.role === 'agent'
@@ -61,10 +62,8 @@ export function useStreamBuffer({ setMessages }) {
         && !last.askUserQuestion
 
       if (snap.needsNewBubble) {
-        // AssistantMessage 単位で 1 bubble。ただし送信直後に追加された
-        // 空 streaming placeholder (= useChatStream が user とペアで push したやつ) が
-        // 末尾にある場合は、そこに今回の中身を埋めて推論中表示を消す。これで
-        // 「user → 推論中… → 中身 bubble」と推論中バブルが残るのを防ぐ。
+        // AssistantMessage 単位で 1 bubble。送信直後の空 streaming placeholder が
+        // あればそこに今回の中身を埋めて推論中表示を消す。
         if (lastIsEmptyAgent) {
           msgs[msgs.length - 1] = {
             ...last,
@@ -72,9 +71,9 @@ export function useStreamBuffer({ setMessages }) {
             thinking: snap.thinking || null,
             tools: [...(snap.newTools || [])],
           }
-          return { ...prev, [agent]: msgs }
+          return { ...prev, [sid]: msgs }
         }
-        return { ...prev, [agent]: [...msgs, {
+        return { ...prev, [sid]: [...msgs, {
           id: generateId(),
           role: 'agent',
           text: snap.text || '',
@@ -96,29 +95,29 @@ export function useStreamBuffer({ setMessages }) {
         if (toAdd.length > 0) updated.tools = [...existing, ...toAdd]
       }
       msgs[msgs.length - 1] = updated
-      return { ...prev, [agent]: msgs }
+      return { ...prev, [sid]: msgs }
     })
   }
 
-  const scheduleFlush = (agent) => {
-    if (rafIdRef.current[agent] !== null) return
-    rafIdRef.current[agent] = requestAnimationFrame(() => {
-      rafIdRef.current[agent] = null
-      flushStreamBuf(agent)
+  const scheduleFlush = (sid) => {
+    if (rafIdRef.current[sid] != null) return
+    rafIdRef.current[sid] = requestAnimationFrame(() => {
+      rafIdRef.current[sid] = null
+      flushStreamBuf(sid)
     })
   }
 
-  const cancelAndFlush = (agent) => {
-    if (rafIdRef.current[agent] !== null) {
-      cancelAnimationFrame(rafIdRef.current[agent])
-      rafIdRef.current[agent] = null
+  const cancelAndFlush = (sid) => {
+    if (rafIdRef.current[sid] != null) {
+      cancelAnimationFrame(rafIdRef.current[sid])
+      rafIdRef.current[sid] = null
     }
-    flushStreamBuf(agent)
+    flushStreamBuf(sid)
   }
 
-  const resetBuf = (agent) => {
-    streamBufRef.current[agent] = { text: null, thinking: null, newTools: [], needsNewBubble: false, dirty: false }
-    currentBubbleHasToolsRef.current[agent] = false
+  const resetBuf = (sid) => {
+    streamBufRef.current[sid] = emptyBuf()
+    currentBubbleHasToolsRef.current[sid] = false
   }
 
   return {
@@ -129,5 +128,6 @@ export function useStreamBuffer({ setMessages }) {
     scheduleFlush,
     cancelAndFlush,
     resetBuf,
+    bufFor,
   }
 }

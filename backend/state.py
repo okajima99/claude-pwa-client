@@ -1,8 +1,14 @@
 """プロセス内で共有する状態 (シングルプロセス FastAPI 前提)。
 
+`session_id` (= UI 上の 1 セッション = 1 議題) を一意キーとして、 全状態を保持する。
+セッションは作成時に `agent_id` (config.json AGENTS の key) を 1 つ持ち、
+それによって cwd / 通知タイトル既定値などの定義を引く。 同じ agent_id を持つ
+セッションは複数同時に存在できる (= 同じ作業ディレクトリで複数議題を並行で持てる)。
+
+- セッション定義 (`sessions_meta`): 永続化、 session_meta.json
 - ストリームごとの SDK 接続状態 (`stream_states`)
 - ステータスキャッシュ (`agent_status`, `shared_status`)
-- セッション ID の永続化 (`sessions` + `save_sessions`)
+- claude セッション ID の永続化 (`sessions` + `save_sessions`): session_id → claude session_id
 - ターン中の assistant text (`last_assistant_text`)
 - 通知抑止用フラグ (`flags["user_visible"]`)
 
@@ -11,6 +17,7 @@ import 越しに mutate できる形にしている。
 """
 import asyncio
 import json
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -20,30 +27,132 @@ from claude_agent_sdk import ClaudeSDKClient
 
 from config import AGENTS
 
-# --- セッション ID 永続化 ---
+# --- 永続化パス ---
 SESSIONS_PATH = Path(__file__).parent / "sessions.json"
+SESSION_META_PATH = Path(__file__).parent / "session_meta.json"
 
 
-def _load_sessions() -> dict[str, str | None]:
+# --- セッション定義 (= UI 上の 1 タブ) ---
+@dataclass
+class SessionDef:
+    id: str
+    agent_id: str
+    title: str
+    created_at: int
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "agent_id": self.agent_id,
+            "title": self.title,
+            "created_at": self.created_at,
+        }
+
+
+def _default_title(agent_id: str, index: int) -> str:
+    cfg = AGENTS.get(agent_id) or {}
+    base = cfg.get("display_name") or agent_id.upper()
+    return f"{base}-{index}"
+
+
+def _new_session_id() -> str:
+    return f"ses_{uuid.uuid4().hex[:12]}"
+
+
+def _load_sessions_meta_and_claude_sessions() -> tuple[dict[str, SessionDef], dict[str, str | None]]:
+    """session_meta.json + sessions.json をロード。 旧 sessions.json (agent_id キー) を
+    検出した場合は agent ごと 1 セッションをマイグレーションして両ファイルを書き換える。
+    """
+    meta_raw: list[dict] | None = None
+    sessions_raw: dict | None = None
+
+    if SESSION_META_PATH.exists():
+        try:
+            meta_raw = json.loads(SESSION_META_PATH.read_text())
+        except Exception:
+            meta_raw = None
     if SESSIONS_PATH.exists():
         try:
-            data = json.loads(SESSIONS_PATH.read_text())
-            return {name: data.get(name) for name in AGENTS}
+            sessions_raw = json.loads(SESSIONS_PATH.read_text())
         except Exception:
-            pass
-    return {name: None for name in AGENTS}
+            sessions_raw = None
+
+    sessions_meta: dict[str, SessionDef] = {}
+    claude_sessions: dict[str, str | None] = {}
+
+    if meta_raw and isinstance(meta_raw, list):
+        # 通常パス: session_meta.json に従う
+        for entry in meta_raw:
+            if not isinstance(entry, dict):
+                continue
+            sid = entry.get("id")
+            aid = entry.get("agent_id")
+            title = entry.get("title") or aid or "session"
+            created = entry.get("created_at") or int(time.time())
+            if not sid or aid not in AGENTS:
+                continue
+            sessions_meta[sid] = SessionDef(
+                id=sid, agent_id=aid, title=title, created_at=int(created)
+            )
+        if isinstance(sessions_raw, dict):
+            for sid in sessions_meta:
+                v = sessions_raw.get(sid)
+                claude_sessions[sid] = v if isinstance(v, str) else None
+        else:
+            for sid in sessions_meta:
+                claude_sessions[sid] = None
+    else:
+        # マイグレーション or 初期化: agent ごと 1 セッションを生成する
+        legacy = sessions_raw if isinstance(sessions_raw, dict) else {}
+        per_agent_idx: dict[str, int] = {}
+        now = int(time.time())
+        for agent_id in AGENTS:
+            sid = _new_session_id()
+            per_agent_idx[agent_id] = per_agent_idx.get(agent_id, 0) + 1
+            sessions_meta[sid] = SessionDef(
+                id=sid,
+                agent_id=agent_id,
+                title=_default_title(agent_id, per_agent_idx[agent_id]),
+                created_at=now,
+            )
+            v = legacy.get(agent_id)
+            claude_sessions[sid] = v if isinstance(v, str) else None
+        # 永続化 (起動時 1 回のみ)
+        _persist_meta(sessions_meta)
+        _persist_sessions(claude_sessions)
+
+    return sessions_meta, claude_sessions
+
+
+def _persist_meta(meta: dict[str, SessionDef]) -> None:
+    SESSION_META_PATH.write_text(
+        json.dumps(
+            [m.to_dict() for m in meta.values()],
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+def _persist_sessions(claude_sessions: dict[str, str | None]) -> None:
+    SESSIONS_PATH.write_text(json.dumps(claude_sessions, ensure_ascii=False))
+
+
+def save_sessions_meta() -> None:
+    _persist_meta(sessions_meta)
 
 
 def save_sessions() -> None:
-    SESSIONS_PATH.write_text(json.dumps(sessions))
+    _persist_sessions(sessions)
 
 
-sessions: dict[str, str | None] = _load_sessions()
+sessions_meta, sessions = _load_sessions_meta_and_claude_sessions()
 
 
 # --- ストリーム状態 ---
 @dataclass
 class StreamState:
+    agent_id: str = ""  # どの AGENTS 設定 (cwd / notification_title) を参照するか
     buffer: list[str] = field(default_factory=list)
     buffer_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     task: asyncio.Task | None = None
@@ -60,7 +169,22 @@ class StreamState:
     user_request_id: str | None = None
 
 
-stream_states: dict[str, StreamState] = {name: StreamState() for name in AGENTS}
+def _make_agent_status(agent_id: str) -> dict:
+    cfg = AGENTS.get(agent_id) or {}
+    return {
+        "ctx_pct": 0,
+        "ctx_window": 1_000_000,
+        "model": cfg.get("model", ""),
+        "plan_mode": False,
+        "current_tool": None,
+        "todos": None,
+        "subagent": None,
+    }
+
+
+stream_states: dict[str, StreamState] = {
+    sid: StreamState(agent_id=meta.agent_id) for sid, meta in sessions_meta.items()
+}
 
 # --- セッションごとの一時ファイル ---
 session_tmp_files: dict[str, list[Path]] = {}
@@ -74,29 +198,67 @@ shared_status: dict = {
 }
 
 agent_status: dict[str, dict] = {
-    name: {
-        "ctx_pct": 0,
-        "ctx_window": 1_000_000,
-        "model": cfg.get("model", ""),
-        "plan_mode": False,
-        "current_tool": None,
-        "todos": None,
-        "subagent": None,
-    }
-    for name, cfg in AGENTS.items()
+    sid: _make_agent_status(meta.agent_id) for sid, meta in sessions_meta.items()
 }
 
 # --- ターン中 assistant text 蓄積 (通知 body 用) ---
-last_assistant_text: dict[str, str] = {name: "" for name in AGENTS}
+last_assistant_text: dict[str, str] = {sid: "" for sid in sessions_meta}
 
 # --- グローバルフラグ (mutate 越し import 用に dict ラップ) ---
 flags: dict = {"user_visible": False}
 
 
+# --- セッション操作ヘルパ ---
+def register_session(agent_id: str, title: str | None = None) -> SessionDef:
+    """新規セッションを登録して全状態 dict を初期化する。 永続化まで行う。"""
+    if agent_id not in AGENTS:
+        raise ValueError(f"Unknown agent_id: {agent_id}")
+    sid = _new_session_id()
+    if not title:
+        existing_count = sum(1 for m in sessions_meta.values() if m.agent_id == agent_id)
+        title = _default_title(agent_id, existing_count + 1)
+    meta = SessionDef(
+        id=sid, agent_id=agent_id, title=title, created_at=int(time.time())
+    )
+    sessions_meta[sid] = meta
+    stream_states[sid] = StreamState(agent_id=agent_id)
+    agent_status[sid] = _make_agent_status(agent_id)
+    last_assistant_text[sid] = ""
+    sessions[sid] = None
+    save_sessions_meta()
+    save_sessions()
+    return meta
+
+
+def unregister_session(session_id: str) -> bool:
+    """セッションを完全削除。 SDK client の disconnect は呼び出し側責任。"""
+    if session_id not in sessions_meta:
+        return False
+    sessions_meta.pop(session_id, None)
+    stream_states.pop(session_id, None)
+    agent_status.pop(session_id, None)
+    last_assistant_text.pop(session_id, None)
+    sessions.pop(session_id, None)
+    session_tmp_files.pop(session_id, None)
+    save_sessions_meta()
+    save_sessions()
+    return True
+
+
+def rename_session(session_id: str, title: str) -> bool:
+    if session_id not in sessions_meta or not title:
+        return False
+    sessions_meta[session_id].title = title
+    save_sessions_meta()
+    return True
+
+
 # --- 共通ヘルパ ---
-def reset_activity(agent: str) -> None:
-    agent_status[agent]["current_tool"] = None
-    agent_status[agent]["subagent"] = None
+def reset_activity(session_id: str) -> None:
+    if session_id not in agent_status:
+        return
+    agent_status[session_id]["current_tool"] = None
+    agent_status[session_id]["subagent"] = None
 
 
 def update_shared_from_headers(headers) -> None:
@@ -151,14 +313,18 @@ def format_model_name(key: str) -> str:
     return key.capitalize()
 
 
-def update_agent_from_result(agent: str, model_usage: dict | None, last_assistant_usage: dict | None) -> None:
-    if not model_usage:
+def update_agent_from_result(session_id: str, model_usage: dict | None, last_assistant_usage: dict | None) -> None:
+    if not model_usage or session_id not in agent_status:
         return
     model_key = next(iter(model_usage), None)
     if not model_key:
         return
-    agent_status[agent]["model"] = format_model_name(model_key)
-    ctx_window = model_usage[model_key].get("contextWindow") or agent_status[agent].get("ctx_window") or 1_000_000
-    agent_status[agent]["ctx_window"] = ctx_window
+    agent_status[session_id]["model"] = format_model_name(model_key)
+    ctx_window = (
+        model_usage[model_key].get("contextWindow")
+        or agent_status[session_id].get("ctx_window")
+        or 1_000_000
+    )
+    agent_status[session_id]["ctx_window"] = ctx_window
     if last_assistant_usage:
-        agent_status[agent]["ctx_pct"] = compute_ctx_pct(last_assistant_usage, ctx_window)
+        agent_status[session_id]["ctx_pct"] = compute_ctx_pct(last_assistant_usage, ctx_window)

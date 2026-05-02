@@ -3,31 +3,39 @@ import './App.css'
 import MessageItem from './components/MessageItem.jsx'
 import ActivityBar from './components/ActivityBar.jsx'
 import StatusBar from './components/StatusBar.jsx'
-import TabBar from './components/TabBar.jsx'
+import SessionDrawer from './components/SessionDrawer.jsx'
 import ConfirmDialog from './components/ConfirmDialog.jsx'
-import { API_BASE, AGENTS } from './constants.js'
+import { API_BASE } from './constants.js'
 import { useStatus } from './hooks/useStatus.js'
 import { useAttachments } from './hooks/useAttachments.js'
 import { useChatStorage } from './hooks/useChatStorage.js'
 import { useAutoScroll } from './hooks/useAutoScroll.js'
 import { useChatStream } from './hooks/useChatStream.js'
+import { useSessions } from './hooks/useSessions.js'
 import { enablePush, disablePush, isPushSupported, isStandalone, isPushEnabledLocally } from './utils/push.js'
 const FilePreviewModal = lazy(() => import('./FilePreviewModal.jsx'))
 const FileTreePanel = lazy(() => import('./FileTreePanel.jsx'))
 
 export default function App() {
-  const [activeAgent, setActiveAgent] = useState(() => {
-    try {
-      const saved = localStorage.getItem('cpc_active_agent')
-      return saved && AGENTS.includes(saved) ? saved : 'agent_a'
-    } catch {
-      return 'agent_a'
-    }
-  })
+  // セッション (= UI 上のタブ = 1 議題) 管理
+  const {
+    sessions,
+    activeId,
+    setActiveId,
+    agents,
+    createSession,
+    removeSession,
+    renameSession,
+  } = useSessions()
 
-  const { messages, setMessages, input, setInput } = useChatStorage()
-  const { attachments, fileInputRef, handleFileSelect, removeAttachment, clearAttachments } = useAttachments(activeAgent)
-  const status = useStatus(activeAgent)
+  const activeSession = useMemo(
+    () => sessions.find(s => s.id === activeId) || null,
+    [sessions, activeId],
+  )
+
+  const { messages, setMessages, input, setInput } = useChatStorage(sessions)
+  const { attachments, fileInputRef, handleFileSelect, removeAttachment, clearAttachments } = useAttachments(activeSession)
+  const status = useStatus(activeSession)
   const {
     scrollerDomRef,
     isAtBottomRef,
@@ -35,23 +43,24 @@ export default function App() {
     hasNew,
     scrollToBottom,
     onScroll,
-  } = useAutoScroll({ messages, activeAgent })
+  } = useAutoScroll({ messages, activeSession })
   const { loading, apiKeySource, sendMessage, sendAnswer, stopMessage, fetchLatest, endSession } = useChatStream({
-    activeAgent,
+    activeSession,
+    sessions,
     setMessages,
     input, setInput,
     attachments, clearAttachments,
     scrollToBottom, isAtBottomRef,
   })
 
-  const [displayNames, setDisplayNames] = useState({})
+  const [drawerOpen, setDrawerOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [previewPath, setPreviewPath] = useState(null)
   const [treeOpen, setTreeOpen] = useState(null)
   const [confirmEnd, setConfirmEnd] = useState(false)
-  // 非アクティブタブで messages 増加 or loading 完了が起きたら「新着」
-  const [tabHasNew, setTabHasNew] = useState(() => Object.fromEntries(AGENTS.map(a => [a, false])))
-  // ステータスバーの相対時刻表示用に30秒間隔でtickする秒値
+  const [confirmDelete, setConfirmDelete] = useState(null) // 削除確認中の session_id
+  // 非アクティブセッションの「新着」 フラグ (session_id ごと)
+  const [tabHasNew, setTabHasNew] = useState({})
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000))
   useEffect(() => {
     const id = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 30000)
@@ -69,16 +78,9 @@ export default function App() {
   }, [])
 
   const handleAnswer = useCallback((tool_use_id, answer) => {
-    sendAnswer(activeAgent, tool_use_id, answer)
-  }, [sendAnswer, activeAgent])
-
-  useEffect(() => {
-    fetch(`${API_BASE}/agents`).then(r => r.json()).then(agents => {
-      const map = {}
-      for (const a of agents) map[a.id] = a.display_name
-      setDisplayNames(map)
-    }).catch(() => {})
-  }, [])
+    if (!activeSession) return
+    sendAnswer(activeSession.id, tool_use_id, answer)
+  }, [sendAnswer, activeSession])
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -90,73 +92,75 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [menuOpen])
 
-  const currentAttachments = attachments[activeAgent]
+  const sids = useMemo(() => sessions.map(s => s.id), [sessions])
+  const currentAttachments = (activeSession && attachments[activeSession.id]) || []
 
-  // 非アクティブタブの状態遷移を監視して「新着」フラグを立てる:
-  //   - messages 件数の増加（新規バブル追加）
-  //   - loading の true→false 遷移（既存 streaming バブルの完了）
-  // アクティブタブに切り替わったらクリア
+  // 非アクティブセッションの状態遷移を見て「新着」 フラグを立てる
   useEffect(() => {
     if (prevTabStateRef.current === null) {
-      prevTabStateRef.current = Object.fromEntries(AGENTS.map(a => [a, { len: messages[a].length, loading: !!loading[a] }]))
+      const init = {}
+      for (const sid of sids) init[sid] = { len: (messages[sid] || []).length, loading: !!loading[sid] }
+      prevTabStateRef.current = init
       return
     }
-    // 1) 前回値を読んで遷移を判定
     const transitions = {}
-    for (const a of AGENTS) {
-      const p = prevTabStateRef.current[a]
-      const len = messages[a].length
-      const isLoading = !!loading[a]
-      transitions[a] = {
+    for (const sid of sids) {
+      const p = prevTabStateRef.current[sid] || { len: 0, loading: false }
+      const len = (messages[sid] || []).length
+      const isLoading = !!loading[sid]
+      transitions[sid] = {
         lengthGrew: len > p.len,
         loadingFinished: p.loading && !isLoading,
       }
     }
-    // 2) 前回値を更新（副作用は setState の外で行う）
-    for (const a of AGENTS) {
-      prevTabStateRef.current[a] = { len: messages[a].length, loading: !!loading[a] }
+    const newPrev = {}
+    for (const sid of sids) {
+      newPrev[sid] = { len: (messages[sid] || []).length, loading: !!loading[sid] }
     }
-    // 3) フラグ更新
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+    prevTabStateRef.current = newPrev
     setTabHasNew(prev => {
       let changed = false
       const next = { ...prev }
-      for (const a of AGENTS) {
-        if (a === activeAgent) {
-          if (next[a]) { next[a] = false; changed = true }
+      for (const sid of sids) {
+        if (sid === activeSession?.id) {
+          if (next[sid]) { next[sid] = false; changed = true }
         } else {
-          const t = transitions[a]
-          if ((t.lengthGrew || t.loadingFinished) && !next[a]) {
-            next[a] = true; changed = true
+          const t = transitions[sid]
+          if (t && (t.lengthGrew || t.loadingFinished) && !next[sid]) {
+            next[sid] = true; changed = true
           }
         }
       }
+      // 削除されたセッションのフラグも掃除
+      for (const sid of Object.keys(next)) {
+        if (!sids.includes(sid)) { delete next[sid]; changed = true }
+      }
       return changed ? next : prev
     })
-  }, [messages, loading, activeAgent])
+  }, [messages, loading, activeSession, sids])
 
-  // タブごとのバッジ判定。アクティブタブは常に非表示。優先度: pending(?) > processing(●青) > new(●赤)
-  const tabBadges = useMemo(() => {
+  const sessionBadges = useMemo(() => {
     const out = {}
-    for (const a of AGENTS) {
-      if (a === activeAgent) { out[a] = null; continue }
-      const pending = messages[a].some(m => m.askUserQuestion && !m.askUserQuestion.answered)
-      if (pending) { out[a] = { kind: 'pending', label: '?' }; continue }
-      if (loading[a]) { out[a] = { kind: 'processing', label: '●' }; continue }
-      if (tabHasNew[a]) { out[a] = { kind: 'new', label: '●' }; continue }
-      out[a] = null
+    for (const sid of sids) {
+      if (sid === activeSession?.id) { out[sid] = null; continue }
+      const arr = messages[sid] || []
+      const pending = arr.some(m => m.askUserQuestion && !m.askUserQuestion.answered)
+      if (pending) { out[sid] = { kind: 'pending', label: '?' }; continue }
+      if (loading[sid]) { out[sid] = { kind: 'processing', label: '●' }; continue }
+      if (tabHasNew[sid]) { out[sid] = { kind: 'new', label: '●' }; continue }
+      out[sid] = null
     }
     return out
-  }, [messages, loading, tabHasNew, activeAgent])
+  }, [messages, loading, tabHasNew, activeSession, sids])
 
-  // ローディング中かつストリーミングメッセージがない場合は仮エントリを末尾に追加
   const displayMessages = useMemo(() => {
-    const msgs = messages[activeAgent]
-    if (loading[activeAgent] && !msgs.some(m => m.streaming)) {
+    if (!activeSession) return []
+    const msgs = messages[activeSession.id] || []
+    if (loading[activeSession.id] && !msgs.some(m => m.streaming)) {
       return [...msgs, { id: '__loading__', role: '__loading__' }]
     }
     return msgs
-  }, [messages, loading, activeAgent])
+  }, [messages, loading, activeSession])
 
   const handleEndSession = () => {
     setMenuOpen(false)
@@ -164,7 +168,19 @@ export default function App() {
     endSession()
   }
 
-  // Web Push 通知 ON/OFF
+  const handleDeleteSession = async () => {
+    if (!confirmDelete) return
+    const sid = confirmDelete
+    setConfirmDelete(null)
+    await removeSession(sid)
+    setMessages(prev => {
+      const next = { ...prev }
+      delete next[sid]
+      return next
+    })
+  }
+
+  // Web Push
   const [pushEnabled, setPushEnabled] = useState(() => isPushEnabledLocally())
   const [pushBusy, setPushBusy] = useState(false)
   const pushAvailable = isPushSupported() && isStandalone()
@@ -188,9 +204,7 @@ export default function App() {
     }
   }
 
-  // PWA フォア視聴状態を backend に通知する。visibilitychange の瞬間に
-  // POST /push/state を 1 回投げるだけ。ポーリング無し = 通信量ゼロに近い。
-  // backend はこれをもとにターン完了通知 (Web Push) を抑止/解除する。
+  // PWA フォア視聴状態を backend に通知
   useEffect(() => {
     const sendState = (visible) => {
       fetch(`${API_BASE}/push/state`, {
@@ -206,11 +220,8 @@ export default function App() {
     return () => document.removeEventListener('visibilitychange', onVis)
   }, [])
 
-  // PWA リセット (Service Worker + Cache Storage を消して強制再読み込み)。
-  // iOS のホーム画面 PWA は Safari 経由でデータ削除できないので、アプリ内から
-  // 同等のことができるようにする。会話ログ (localStorage) は触らない。
+  // PWA リセット
   const [confirmReset, setConfirmReset] = useState(false)
-
   const handleReset = async () => {
     setConfirmReset(false)
     setMenuOpen(false)
@@ -224,41 +235,53 @@ export default function App() {
         await Promise.all(keys.map(k => caches.delete(k).catch(() => {})))
       }
     } catch { /* ignore */ }
-    // 強制 reload (キャッシュバスタ付き)。location.reload(true) は仕様廃止なのでクエリで代替
     const u = new URL(window.location.href)
     u.searchParams.set('_r', String(Date.now()))
     window.location.replace(u.toString())
   }
 
+  const activeSid = activeSession?.id
+  const inputDisabled = !activeSession || !!loading[activeSid]
+
   return (
     <div className="app">
       <StatusBar status={status} nowSec={nowSec} />
-      <TabBar
-        activeAgent={activeAgent}
-        setActiveAgent={setActiveAgent}
-        displayNames={displayNames}
-        tabBadges={tabBadges}
+
+      {/* ヘッダ: ハンバーガー + セッション名 */}
+      <header className="topbar">
+        <button className="hamburger" onClick={() => setDrawerOpen(true)} aria-label="セッション一覧">
+          ☰
+        </button>
+        <span className="topbar-title">{activeSession?.title || 'セッションなし'}</span>
+      </header>
+
+      <SessionDrawer
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        sessions={sessions}
+        agents={agents}
+        activeId={activeId}
+        onSelect={setActiveId}
+        onCreate={(agentId) => createSession(agentId)}
+        onRename={renameSession}
+        onDelete={(sid) => setConfirmDelete(sid)}
+        sessionBadges={sessionBadges}
       />
 
       {/* メッセージ一覧 */}
       <div className="messages-container">
-        <div
-          ref={scrollerDomRef}
-          className="messages"
-          onScroll={onScroll}
-        >
+        <div ref={scrollerDomRef} className="messages" onScroll={onScroll}>
           {displayMessages.map((msg) => (
             <MessageItem
               key={msg.id}
               msg={msg}
               onOpenFile={handleOpenPath}
               onAnswer={handleAnswer}
-              apiKeySource={apiKeySource[activeAgent]}
+              apiKeySource={activeSid ? apiKeySource[activeSid] : null}
             />
           ))}
         </div>
 
-        {/* ↓ スクロールボタン */}
         {showScrollBtn && (
           <button className="scroll-btn" onClick={() => scrollToBottom()}>
             ↓
@@ -267,7 +290,6 @@ export default function App() {
         )}
       </div>
 
-      {/* 添付ファイルプレビュー */}
       {currentAttachments.length > 0 && (
         <div className="attachments-bar">
           {currentAttachments.map((item, i) => (
@@ -277,16 +299,14 @@ export default function App() {
               ) : (
                 <span className="attach-name">📄 {item.file.name}</span>
               )}
-              <button className="attach-remove" onClick={() => removeAttachment(activeAgent, i)}>×</button>
+              <button className="attach-remove" onClick={() => removeAttachment(activeSid, i)}>×</button>
             </div>
           ))}
         </div>
       )}
 
-      {/* アクティビティバー（plan/tool/subagent/todos） */}
       <ActivityBar status={status} />
 
-      {/* 入力エリア */}
       <div className="inputarea">
         <input
           ref={fileInputRef}
@@ -297,11 +317,11 @@ export default function App() {
           onChange={handleFileSelect}
         />
         <textarea
-          value={input[activeAgent]}
-          onChange={e => setInput(prev => ({ ...prev, [activeAgent]: e.target.value }))}
-          placeholder="メッセージを入力..."
+          value={activeSid ? (input[activeSid] || '') : ''}
+          onChange={e => activeSid && setInput(prev => ({ ...prev, [activeSid]: e.target.value }))}
+          placeholder={activeSession ? 'メッセージを入力...' : '左の ☰ からセッションを作成してください'}
           rows={2}
-          disabled={loading[activeAgent]}
+          disabled={inputDisabled}
         />
         <div className="buttons" ref={menuRef}>
           {menuOpen && (
@@ -323,8 +343,12 @@ export default function App() {
               <button onClick={() => { setMenuOpen(false); setConfirmReset(true) }} className="menu-item">
                 リセット (キャッシュ・SW 削除)
               </button>
-              <button onClick={() => { setMenuOpen(false); setConfirmEnd(true) }} className="menu-item end">
-                セッション終了
+              <button
+                onClick={() => { setMenuOpen(false); setConfirmEnd(true) }}
+                className="menu-item end"
+                disabled={!activeSession}
+              >
+                セッション終了 (会話のみリセット)
               </button>
             </div>
           )}
@@ -334,12 +358,12 @@ export default function App() {
           >
             ⋯
           </button>
-          {loading[activeAgent] ? (
+          {activeSid && loading[activeSid] ? (
             <button onClick={stopMessage} className="stop">■</button>
           ) : (
             <button
               onClick={sendMessage}
-              disabled={!input[activeAgent].trim() && currentAttachments.length === 0}
+              disabled={!activeSession || (!(input[activeSid] || '').trim() && currentAttachments.length === 0)}
               className="send"
             >
               送信
@@ -350,7 +374,7 @@ export default function App() {
 
       <ConfirmDialog
         open={confirmEnd}
-        text="セッションを終了しますか？"
+        text="このセッションの会話をリセットしますか？ (タブは残ります)"
         onCancel={() => setConfirmEnd(false)}
         onConfirm={handleEndSession}
       />
@@ -365,6 +389,18 @@ export default function App() {
         }
         onCancel={() => setConfirmReset(false)}
         onConfirm={handleReset}
+      />
+      <ConfirmDialog
+        open={!!confirmDelete}
+        text={
+          <>
+            このセッションを削除しますか？
+            <br />
+            <span className="dim">会話履歴も削除されます。 元に戻せません。</span>
+          </>
+        }
+        onCancel={() => setConfirmDelete(null)}
+        onConfirm={handleDeleteSession}
       />
 
       <Suspense fallback={null}>

@@ -1,13 +1,19 @@
 """チャット送受信・状態問い合わせ系のエンドポイント群。
 
+セッション (UI 上の 1 タブ = 1 議題) を一意キー session_id で扱う。
+
 含まれるルート:
-- POST /chat/{agent}/stream      新規ターン開始 + SSE 配信
-- POST /chat/{agent}/answer      AskUserQuestion への回答
-- POST /chat/{agent}/stop        ターン中断
-- GET  /chat/{agent}/reconnect   バッファ再生
-- POST /session/{agent}/end      セッションリセット
-- GET  /status/{agent}           ステータス取得
-- GET  /agents                   エージェント一覧
+- POST /chat/{session_id}/stream      新規ターン開始 + SSE 配信
+- POST /chat/{session_id}/answer      AskUserQuestion への回答
+- POST /chat/{session_id}/stop        ターン中断
+- GET  /chat/{session_id}/reconnect   バッファ再生
+- POST /sessions/{session_id}/end     claude session_id だけクリア (UI セッションは残す)
+- GET  /status/{session_id}           ステータス取得
+- GET  /sessions                      セッション一覧
+- POST /sessions                      新規セッション作成 (body: {agent_id, title?})
+- PATCH /sessions/{session_id}        title 変更 (body: {title})
+- DELETE /sessions/{session_id}       セッション削除
+- GET  /agents                        agent 種別一覧 (作成時の選択肢)
 """
 import asyncio
 import base64
@@ -24,12 +30,16 @@ from config import AGENTS, SUPPORTED_IMAGE_TYPES, UPLOADS_TMP
 from sdk_runner import disconnect_client, run_sdk_background
 from state import (
     agent_status,
+    register_session,
+    rename_session,
     reset_activity,
     save_sessions,
     session_tmp_files,
     sessions,
+    sessions_meta,
     shared_status,
     stream_states,
+    unregister_session,
 )
 
 logger = logging.getLogger(__name__)
@@ -49,7 +59,7 @@ router = APIRouter()
 
 
 # --- ファイル一時保存 / コンテンツ組み立て ---
-async def save_to_tmp(files: List[UploadFile], agent: str) -> List[dict]:
+async def save_to_tmp(files: List[UploadFile], session_id: str) -> List[dict]:
     UPLOADS_TMP.mkdir(parents=True, exist_ok=True)
     saved = []
     for f in files:
@@ -59,7 +69,7 @@ async def save_to_tmp(files: List[UploadFile], agent: str) -> List[dict]:
         dest = UPLOADS_TMP / f"{uuid.uuid4().hex}{ext}"
         data = await f.read()
         dest.write_bytes(data)
-        session_tmp_files.setdefault(agent, []).append(dest)
+        session_tmp_files.setdefault(session_id, []).append(dest)
         saved.append({
             "name": f.filename or dest.name,
             "path": str(dest),
@@ -94,17 +104,68 @@ def build_content(message: str, saved_files: List[dict]) -> list:
     return content
 
 
+# --- セッション CRUD ---
+@router.get("/sessions")
+def list_sessions():
+    return [m.to_dict() for m in sessions_meta.values()]
+
+
+@router.post("/sessions")
+def create_session(payload: dict = Body(...)):
+    agent_id = payload.get("agent_id")
+    title = payload.get("title")
+    if not agent_id or agent_id not in AGENTS:
+        raise HTTPException(status_code=400, detail="agent_id が無効です")
+    meta = register_session(agent_id, title)
+    return meta.to_dict()
+
+
+@router.patch("/sessions/{session_id}")
+def patch_session(session_id: str, payload: dict = Body(...)):
+    if session_id not in sessions_meta:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    title = payload.get("title")
+    if not isinstance(title, str) or not title.strip():
+        raise HTTPException(status_code=400, detail="title は必須 (空不可)")
+    rename_session(session_id, title.strip())
+    return sessions_meta[session_id].to_dict()
+
+
+@router.delete("/sessions/{session_id}")
+async def delete_session(session_id: str):
+    if session_id not in sessions_meta:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    # SDK client を切断してから state を破棄
+    await disconnect_client(session_id)
+    # 残タスクがあればキャンセル
+    state = stream_states.get(session_id)
+    if state and state.task and not state.task.done():
+        state.task.cancel()
+        try:
+            await state.task
+        except Exception:
+            pass
+    # 一時ファイルをクリーンアップ
+    for p in session_tmp_files.pop(session_id, []):
+        try:
+            p.unlink(missing_ok=True)
+        except Exception:
+            pass
+    unregister_session(session_id)
+    return {"status": "ok", "session_id": session_id}
+
+
 # --- エンドポイント ---
-@router.post("/chat/{agent}/stream")
+@router.post("/chat/{session_id}/stream")
 async def chat_stream(
-    agent: str,
+    session_id: str,
     message: str = Form(...),
     files: List[UploadFile] = File(default=[]),
 ):
-    if agent not in AGENTS:
-        raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
+    if session_id not in sessions_meta:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
 
-    state = stream_states[agent]
+    state = stream_states[session_id]
 
     # 新ターン開始: 直前のタスクが残っていれば完全にキャンセル・待機する
     # （割り込まれた tool_use は orphan として記録し、下で tool_result を合成して閉じる）
@@ -113,11 +174,11 @@ async def chat_stream(
             if state.client is not None:
                 await state.client.interrupt()
         except Exception:
-            logger.exception("interrupt failed during new-stream for agent=%s", agent)
-        cur = agent_status[agent].get("current_tool")
+            logger.exception("interrupt failed during new-stream for session=%s", session_id)
+        cur = agent_status[session_id].get("current_tool")
         if cur and cur.get("id"):
             state.orphaned_tool_use_id = cur["id"]
-        agent_status[agent]["current_tool"] = None
+        agent_status[session_id]["current_tool"] = None
         state.task.cancel()
         try:
             await state.task
@@ -125,7 +186,7 @@ async def chat_stream(
             pass
 
     if state.complete or state.task is None or state.task.done():
-        saved_files = await save_to_tmp(files, agent)
+        saved_files = await save_to_tmp(files, session_id)
         content = build_content(message, saved_files)
 
         # 孤児 tool_use が残っていれば synthetic tool_result を先頭に差し込んで履歴を閉じる
@@ -150,8 +211,8 @@ async def chat_stream(
         user_request_id = uuid.uuid4().hex[:12]
         state.user_request_id = user_request_id
         logger.info(
-            "[POST /chat/stream] agent=%s user_request_id=%s text=%r files=%d",
-            agent, user_request_id, message[:80], len(saved_files),
+            "[POST /chat/stream] session=%s user_request_id=%s text=%r files=%d",
+            session_id, user_request_id, message[:80], len(saved_files),
         )
 
         state.buffer = []
@@ -162,7 +223,7 @@ async def chat_stream(
             "data: " + _json.dumps({"type": "request_id", "request_id": user_request_id}) + "\n\n"
         )
         state.complete = False
-        state.task = asyncio.create_task(run_sdk_background(agent, content, user_request_id))
+        state.task = asyncio.create_task(run_sdk_background(session_id, content, user_request_id))
 
     async def generate():
         sent = 0
@@ -187,12 +248,12 @@ async def chat_stream(
     )
 
 
-@router.post("/chat/{agent}/answer")
-async def chat_answer(agent: str, payload: dict = Body(...)):
+@router.post("/chat/{session_id}/answer")
+async def chat_answer(session_id: str, payload: dict = Body(...)):
     """AskUserQuestion への回答を受け取って can_use_tool ハンドラに返す"""
-    if agent not in AGENTS:
-        raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
-    state = stream_states[agent]
+    if session_id not in sessions_meta:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    state = stream_states[session_id]
     if state.pending_question is None or state.pending_question.done():
         raise HTTPException(status_code=409, detail="回答待ちの質問がありません")
 
@@ -204,17 +265,17 @@ async def chat_answer(agent: str, payload: dict = Body(...)):
     return {"status": "ok", "tool_use_id": state.pending_question_tool_id}
 
 
-@router.post("/chat/{agent}/stop")
-async def chat_stop(agent: str):
-    if agent not in AGENTS:
-        raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
+@router.post("/chat/{session_id}/stop")
+async def chat_stop(session_id: str):
+    if session_id not in sessions_meta:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
 
-    state = stream_states[agent]
+    state = stream_states[session_id]
     if state.client is not None:
         try:
             await state.client.interrupt()
         except Exception:
-            logger.exception("interrupt failed for agent=%s", agent)
+            logger.exception("interrupt failed for session=%s", session_id)
 
     if state.task and not state.task.done():
         # SDK の interrupt で receive_response が終了するはずだが、念のためキャンセルもトリガー
@@ -224,7 +285,7 @@ async def chat_stop(agent: str):
         state.pending_question.cancel()
 
     # 実行中だった tool_use を孤児として記録（次ターン先頭で tool_result を合成して閉じる）
-    cur = agent_status[agent].get("current_tool")
+    cur = agent_status[session_id].get("current_tool")
     if cur and cur.get("id"):
         state.orphaned_tool_use_id = cur["id"]
 
@@ -240,39 +301,42 @@ async def chat_stop(agent: str):
     # 次ターンの ResultMessage が is_error=true で帰ってきて「⚠ エラーで停止」
     # チップが出たり、以降のターンで挙動がおかしくなる。明示的に disconnect して
     # 新 send で ensure_client が新しい client を建て直すようにする。
-    await disconnect_client(agent)
+    await disconnect_client(session_id)
 
     state.complete = True
-    reset_activity(agent)
+    reset_activity(session_id)
 
     return {"status": "stopped"}
 
 
-@router.post("/session/{agent}/end")
-async def end_session(agent: str):
-    if agent not in AGENTS:
-        raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
+@router.post("/sessions/{session_id}/end")
+async def end_session(session_id: str):
+    """claude 側の会話 context だけリセット (UI セッションは残す)。
+    旧 /session/{agent}/end の置換。 セッションそのものを消すには DELETE /sessions/{id}。
+    """
+    if session_id not in sessions_meta:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
     # SDK クライアントを切断（再接続で新セッションになる）
-    await disconnect_client(agent)
-    sessions[agent] = None
+    await disconnect_client(session_id)
+    sessions[session_id] = None
     save_sessions()
-    agent_status[agent]["todos"] = None
-    agent_status[agent]["plan_mode"] = False
-    reset_activity(agent)
-    for p in session_tmp_files.pop(agent, []):
+    agent_status[session_id]["todos"] = None
+    agent_status[session_id]["plan_mode"] = False
+    reset_activity(session_id)
+    for p in session_tmp_files.pop(session_id, []):
         try:
             p.unlink(missing_ok=True)
         except Exception:
             pass
-    return {"status": "ok", "agent": agent}
+    return {"status": "ok", "session_id": session_id}
 
 
-@router.get("/status/{agent}")
-def get_status(agent: str):
-    if agent not in AGENTS:
-        raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
-    a = agent_status[agent]
-    state = stream_states[agent]
+@router.get("/status/{session_id}")
+def get_status(session_id: str):
+    if session_id not in sessions_meta:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    a = agent_status[session_id]
+    state = stream_states[session_id]
     return {
         "model": a["model"],
         "ctx_pct": a["ctx_pct"],
@@ -291,12 +355,12 @@ def get_status(agent: str):
     }
 
 
-@router.get("/chat/{agent}/reconnect")
-async def reconnect_stream(agent: str, from_pos: int = Query(default=0, alias="from")):
-    if agent not in AGENTS:
-        raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found")
+@router.get("/chat/{session_id}/reconnect")
+async def reconnect_stream(session_id: str, from_pos: int = Query(default=0, alias="from")):
+    if session_id not in sessions_meta:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
 
-    state = stream_states[agent]
+    state = stream_states[session_id]
     if state.complete and from_pos >= len(state.buffer):
         return Response(status_code=204)
 
@@ -325,6 +389,7 @@ async def reconnect_stream(agent: str, from_pos: int = Query(default=0, alias="f
 
 @router.get("/agents")
 def list_agents():
+    """セッション作成時の選択肢として agent 種別一覧を返す。"""
     return [
         {"id": name, "display_name": cfg.get("display_name", name.upper())}
         for name, cfg in AGENTS.items()

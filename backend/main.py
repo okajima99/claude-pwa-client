@@ -63,8 +63,8 @@ async def lifespan(app: FastAPI):
     yield
 
     # 終了: SDK クライアントを全て切断 + httpx を閉じる
-    for agent in list(stream_states.keys()):
-        await disconnect_client(agent)
+    for session_id in list(stream_states.keys()):
+        await disconnect_client(session_id)
     await http_client.aclose()
 
 
