@@ -10,7 +10,6 @@ import { generateId } from '../../utils/id.js'
 //
 // 公開する ref:
 // - streamBufRef                 : 受信中の最新スナップショット (session_id → buf)
-// - replayModeRef                : reconnect 中フラグ (バブル分割を抑止する)
 //
 // 公開関数:
 // - flushStreamBuf(sid)        : バッファを setState に反映
@@ -18,13 +17,12 @@ import { generateId } from '../../utils/id.js'
 // - cancelAndFlush(sid)        : 予約をキャンセルして即 flush
 // - resetBuf(sid)              : 新規ターン / reconnect 開始時の初期化
 function emptyBuf() {
-  return { text: null, thinking: null, newTools: [], needsNewBubble: false, dirty: false }
+  return { text: null, thinking: null, newTools: [], needsNewBubble: false, uuid: null, dirty: false }
 }
 
 export function useStreamBuffer({ setMessages }) {
   const streamBufRef = useRef({})
   const rafIdRef = useRef({})
-  const replayModeRef = useRef({})
 
   const bufFor = (sid) => {
     if (!streamBufRef.current[sid]) streamBufRef.current[sid] = emptyBuf()
@@ -40,11 +38,13 @@ export function useStreamBuffer({ setMessages }) {
       thinking: buf.thinking,
       newTools: [...buf.newTools],
       needsNewBubble: buf.needsNewBubble,
+      uuid: buf.uuid,
     }
     buf.text = null
     buf.thinking = null
     buf.newTools = []
     buf.needsNewBubble = false
+    buf.uuid = null
     buf.dirty = false
 
     setMessages(prev => {
@@ -60,11 +60,27 @@ export function useStreamBuffer({ setMessages }) {
         && !last.askUserQuestion
 
       if (snap.needsNewBubble) {
+        // 重複 dedup (= reconnect / replay 時): 同じ AssistantMessage uuid を持つ bubble が
+        // 既に messages 内にあれば、 content を上書きして補完する。 通常受信中は同 uuid が
+        // 2 度来ることは無いので無害、 replay では partial bubble が完全形に埋め直される。
+        if (snap.uuid) {
+          const existIdx = msgs.findIndex(m => m.uuid === snap.uuid)
+          if (existIdx >= 0) {
+            msgs[existIdx] = {
+              ...msgs[existIdx],
+              text: snap.text || '',
+              thinking: snap.thinking || null,
+              tools: [...(snap.newTools || [])],
+            }
+            return { ...prev, [sid]: msgs }
+          }
+        }
         // AssistantMessage 単位で 1 bubble。送信直後の空 streaming placeholder が
         // あればそこに今回の中身を埋めて推論中表示を消す。
         if (lastIsEmptyAgent) {
           msgs[msgs.length - 1] = {
             ...last,
+            uuid: snap.uuid || last.uuid,
             text: snap.text || '',
             thinking: snap.thinking || null,
             tools: [...(snap.newTools || [])],
@@ -73,6 +89,7 @@ export function useStreamBuffer({ setMessages }) {
         }
         return { ...prev, [sid]: [...msgs, {
           id: generateId(),
+          uuid: snap.uuid || null,
           role: 'agent',
           text: snap.text || '',
           thinking: snap.thinking || null,
@@ -119,7 +136,6 @@ export function useStreamBuffer({ setMessages }) {
 
   return {
     streamBufRef,
-    replayModeRef,
     flushStreamBuf,
     scheduleFlush,
     cancelAndFlush,

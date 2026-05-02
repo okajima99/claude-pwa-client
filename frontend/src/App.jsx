@@ -4,6 +4,7 @@ import MessageItem from './components/MessageItem.jsx'
 import ActivityBar from './components/ActivityBar.jsx'
 import StatusBar from './components/StatusBar.jsx'
 import SessionDrawer from './components/SessionDrawer.jsx'
+import StorageWarning from './components/StorageWarning.jsx'
 import ConfirmDialog from './components/ConfirmDialog.jsx'
 import { API_BASE } from './constants.js'
 import { useStatus } from './hooks/useStatus.js'
@@ -12,6 +13,8 @@ import { useChatStorage } from './hooks/useChatStorage.js'
 import { useAutoScroll } from './hooks/useAutoScroll.js'
 import { useChatStream } from './hooks/useChatStream.js'
 import { useSessions } from './hooks/useSessions.js'
+import { useStorageQuota } from './hooks/useStorageQuota.js'
+import { gcImages } from './utils/imageStore.js'
 import { enablePush, disablePush, isPushSupported, isStandalone, isPushEnabledLocally } from './utils/push.js'
 const FilePreviewModal = lazy(() => import('./FilePreviewModal.jsx'))
 const FileTreePanel = lazy(() => import('./FileTreePanel.jsx'))
@@ -55,6 +58,8 @@ export default function App() {
     scrollToBottom, isAtBottomRef,
   })
 
+  const storageInfo = useStorageQuota()
+  const [storageWarnDismissed, setStorageWarnDismissed] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [previewPath, setPreviewPath] = useState(null)
@@ -180,6 +185,8 @@ export default function App() {
       delete next[sid]
       return next
     })
+    // セッション削除で参照が一気に消えるので IndexedDB の orphan 画像も掃除する
+    gcRanRef.current = false
   }
 
   // Web Push
@@ -205,6 +212,30 @@ export default function App() {
       setPushBusy(false)
     }
   }
+
+  // IndexedDB 画像の orphan GC: 起動時とセッション削除時に、 messages から参照されてない
+  // imageRef を IndexedDB から削除する。 起動時 1 回 + 削除トリガで増分掃除。
+  const gcRanRef = useRef(false)
+  useEffect(() => {
+    if (gcRanRef.current) return
+    gcRanRef.current = true
+    const collect = () => {
+      const active = new Set()
+      for (const sid of Object.keys(messages)) {
+        for (const m of messages[sid] || []) {
+          if (m.imageRefs && Array.isArray(m.imageRefs)) {
+            for (const id of m.imageRefs) active.add(id)
+          }
+        }
+      }
+      return active
+    }
+    // 起動から少し待ってから (初回ロードで messages が確定するのを待つ)
+    const id = setTimeout(() => {
+      gcImages([...collect()]).catch(() => {})
+    }, 5000)
+    return () => clearTimeout(id)
+  }, [messages])
 
   // PWA フォア視聴状態を backend に通知
   useEffect(() => {
@@ -247,6 +278,11 @@ export default function App() {
   return (
     <div className="app">
       <StatusBar status={status} nowSec={nowSec} />
+      <StorageWarning
+        info={storageInfo}
+        dismissed={storageWarnDismissed}
+        onDismiss={() => setStorageWarnDismissed(true)}
+      />
 
       {/* ヘッダ: ハンバーガー + セッション名 */}
       <header className="topbar">

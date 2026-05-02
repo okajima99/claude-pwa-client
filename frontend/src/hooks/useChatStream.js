@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { flushSync } from 'react-dom'
 import { API_BASE, MAX_MESSAGES } from '../constants.js'
 import { generateId } from '../utils/id.js'
-import { fileToBase64 } from '../utils/file.js'
+import { putImage } from '../utils/imageStore.js'
 import { describeError } from '../utils/format.js'
 import { useStreamBuffer } from './internal/useStreamBuffer.js'
 import { useStreamReconnect } from './internal/useStreamReconnect.js'
@@ -93,13 +93,16 @@ export function useChatStream({
     const imageItems = items.filter(item => item.url)
     const fileNames = items.filter(item => !item.url).map(item => item.file.name)
 
-    const imageUrls = (await Promise.all(
-      imageItems.map(item => fileToBase64(item.file).catch(() => null))
+    // 画像は IndexedDB に Blob で保存して、 message には参照 ID だけ持つ。
+    // data URL を localStorage に詰めるより圧縮コスト・容量圧迫が小さい。
+    const imageRefs = (await Promise.all(
+      imageItems.map(item => putImage(item.file).catch(() => null))
     )).filter(Boolean)
+    // 一覧プレビュー用の BlobURL は使い終わったので解放
     imageItems.forEach(item => URL.revokeObjectURL(item.url))
 
     isAtBottomRef.current = true
-    const userMsg = { id: generateId(), role: 'user', text, imageUrls, fileNames }
+    const userMsg = { id: generateId(), role: 'user', text, imageRefs, fileNames }
     const agentMsg = { id: generateId(), role: 'agent', text: '', tools: [], streaming: true }
     flushSync(() => {
       setMessages(prev => {

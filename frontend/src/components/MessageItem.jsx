@@ -1,6 +1,7 @@
 import { memo, useEffect, useState } from 'react'
 import MessageRenderer from '../MessageRenderer.jsx'
 import AskUserQuestionBubble from './AskUserQuestionBubble.jsx'
+import AttachedImages from './AttachedImages.jsx'
 import { formatToolResultContent, formatCost, formatDuration, formatModelName, formatTokens } from '../utils/format.js'
 import { diffLines, compactDiff } from '../utils/diff.js'
 import { API_BASE } from '../constants.js'
@@ -253,15 +254,9 @@ const MessageItem = memo(function MessageItem({ msg, onOpenFile, onAnswer, apiKe
   }
   return (
     <div className={`message ${msg.role}`}>
-      {msg.role === 'user' && (msg.imageUrls?.length > 0 || msg.fileNames?.length > 0) ? (
+      {msg.role === 'user' && (msg.imageRefs?.length > 0 || msg.imageUrls?.length > 0 || msg.fileNames?.length > 0) ? (
         <div className="user-block">
-          {msg.imageUrls?.length > 0 && (
-            <div className="attach-images">
-              {msg.imageUrls.map((url, j) => (
-                <img key={j} src={url} className="msg-image" alt="" />
-              ))}
-            </div>
-          )}
+          <AttachedImages imageRefs={msg.imageRefs} imageUrls={msg.imageUrls} />
           {msg.fileNames?.length > 0 && (
             <div className="attach-files">
               {msg.fileNames.map((name, j) => (

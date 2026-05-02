@@ -23,7 +23,6 @@ export function processStreamEvent(deps, sid, event) {
     scheduleFlush,
     streamBufRef,
     bufFor,
-    replayModeRef,
     onUserRequestId,
     onResultMessage,
   } = deps
@@ -161,23 +160,15 @@ export function processStreamEvent(deps, sid, event) {
   const newTools = event.message.content
     .filter(b => b.type === 'tool_use' && b.name !== 'Agent' && b.name !== 'AskUserQuestion' && b.name !== 'TodoWrite')
     .map(b => formatTool(b))
-  const hasAnyToolUse = event.message.content.some(b => b.type === 'tool_use')
 
-  // bufFor で lazy init (動的セッション対応)
+  // 通常受信も replay も同じロジックで処理し、 バブル単位の重複は uuid で flush 時に dedup する。
+  // (event.uuid = AssistantMessage の uuid。 同じものを 2 回 replay しても 1 つの bubble に収束)
   const buf = bufFor ? bufFor(sid) : streamBufRef.current[sid]
-  if (replayModeRef.current[sid]) {
-    if (textContent) buf.text = textContent
-    if (thinkingContent) buf.thinking = thinkingContent
-    if (newTools.length > 0) {
-      buf.newTools = [...buf.newTools, ...newTools]
-    }
-  } else {
-    buf.needsNewBubble = true
-    buf.text = textContent
-    buf.thinking = thinkingContent || null
-    buf.newTools = newTools
-  }
-  void hasAnyToolUse
+  buf.needsNewBubble = true
+  buf.text = textContent
+  buf.thinking = thinkingContent || null
+  buf.newTools = newTools
+  buf.uuid = event.uuid || null
   buf.dirty = true
   scheduleFlush(sid)
 }

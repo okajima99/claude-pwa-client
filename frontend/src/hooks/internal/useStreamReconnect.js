@@ -34,7 +34,6 @@ export function useStreamReconnect({
     scheduleFlush: buffer.scheduleFlush,
     streamBufRef: buffer.streamBufRef,
     bufFor: buffer.bufFor,
-    replayModeRef: buffer.replayModeRef,
     onUserRequestId,
     onResultMessage,
   }
@@ -62,7 +61,7 @@ export function useStreamReconnect({
     })
 
     buffer.resetBuf(sid)
-    buffer.replayModeRef.current[sid] = true
+    // replay は通常受信と同じロジック (uuid dedup) で済ませるので、 専用のフラグは不要
 
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
@@ -92,7 +91,6 @@ export function useStreamReconnect({
 
       return true
     } finally {
-      buffer.replayModeRef.current[sid] = false
       buffer.cancelAndFlush(sid)
       setLoading(prev => ({ ...prev, [sid]: false }))
       setMessages(prev => {
